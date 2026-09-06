@@ -4,8 +4,6 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP(
     "YouTube Statistics",
-    stateless_http=True,
-    json_response=True,
     host="0.0.0.0",
     port=int(os.environ.get("PORT", "10000"))
 )
