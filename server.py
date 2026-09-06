@@ -43,6 +43,45 @@ def get_channel_stats(channel_id: str) -> dict:
         "videos": channel["statistics"].get("videoCount"),
     }
 
+@mcp.tool()
+def search_channels(query: str, max_results: int = 20) -> dict:
+    """Найти YouTube-каналы по поисковому запросу."""
+
+    max_results = min(max(1, max_results), 50)
+
+    response = requests.get(
+        "https://www.googleapis.com/youtube/v3/search",
+        params={
+            "part": "snippet",
+            "q": query,
+            "type": "channel",
+            "maxResults": max_results,
+            "key": YOUTUBE_API_KEY,
+        },
+        timeout=30,
+    )
+
+    response.raise_for_status()
+    data = response.json()
+
+    channels = []
+
+    for item in data.get("items", []):
+        snippet = item["snippet"]
+
+        channels.append({
+            "channel_id": item["id"]["channelId"],
+            "title": snippet["title"],
+            "description": snippet.get("description", ""),
+            "published_at": snippet.get("publishedAt"),
+        })
+
+    return {
+        "query": query,
+        "count": len(channels),
+        "channels": channels,
+    }
+
 
 if __name__ == "__main__":
     mcp.run(transport="streamable-http")
