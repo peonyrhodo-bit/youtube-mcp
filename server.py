@@ -1,6 +1,12 @@
 import os
 import requests
 from mcp.server.fastmcp import FastMCP
+from fastapi import FastAPI
+
+
+# ============================================================
+# MCP SERVER
+# ============================================================
 
 mcp = FastMCP(
     "YouTube Statistics",
@@ -10,6 +16,10 @@ mcp = FastMCP(
 
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 
+
+# ============================================================
+# TOOL: GET CHANNEL STATS
+# ============================================================
 
 @mcp.tool()
 def get_channel_stats(channel_id: str) -> dict:
@@ -43,6 +53,10 @@ def get_channel_stats(channel_id: str) -> dict:
         "videos": channel["statistics"].get("videoCount"),
     }
 
+
+# ============================================================
+# TOOL: SEARCH CHANNELS
+# ============================================================
 
 @mcp.tool()
 def search_channels(query: str, max_results: int = 20) -> dict:
@@ -84,6 +98,10 @@ def search_channels(query: str, max_results: int = 20) -> dict:
     }
 
 
+# ============================================================
+# TOOL: SEARCH VIDEOS
+# ============================================================
+
 @mcp.tool()
 def search_videos(
     query: str,
@@ -94,7 +112,7 @@ def search_videos(
     relevance_language: str | None = None,
     order: str = "viewCount",
 ) -> dict:
-    """Найти YouTube-видео и получить их основные статистические показатели."""
+    """Найти YouTube-видео и получить их статистику."""
 
     max_results = min(max(1, max_results), 50)
 
@@ -161,6 +179,7 @@ def search_videos(
             "videos": [],
         }
 
+    # Получаем подробную статистику найденных видео
     stats_response = requests.get(
         "https://www.googleapis.com/youtube/v3/videos",
         params={
@@ -226,5 +245,41 @@ def search_videos(
     }
 
 
+# ============================================================
+# SIMPLE HTTP ENDPOINT FOR CHECKING MCP TOOLS
+# ============================================================
+
+app = FastAPI()
+
+
+@app.get("/mcp-tools")
+async def mcp_tools():
+    """
+    Показать список зарегистрированных MCP-инструментов.
+    Используется только для проверки сервера.
+    """
+
+    tools = []
+
+    for tool in await mcp.list_tools():
+        tools.append({
+            "name": tool.name,
+            "description": tool.description,
+        })
+
+    return {
+        "count": len(tools),
+        "tools": tools,
+    }
+
+
+# ============================================================
+# START SERVER
+# ============================================================
+
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    port = int(os.environ.get("PORT", "10000"))
+
+    mcp.run(
+        transport="streamable-http"
+    )
