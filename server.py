@@ -251,29 +251,18 @@ def search_videos(
 @mcp.tool()
 def search_trending_videos(
     max_results: int = 50,
-    hours: int = 24,
     region_code: str = "US",
 ) -> dict:
-    """Найти свежие популярные YouTube-видео и исключить нежелательные темы."""
+    """Получить популярные YouTube-видео и исключить нежелательные темы."""
 
     max_results = min(max(1, max_results), 50)
-    hours = min(max(1, hours), 168)
 
-    from datetime import datetime, timedelta, timezone
-
-    published_after = (
-        datetime.now(timezone.utc)
-        - timedelta(hours=hours)
-    ).isoformat().replace("+00:00", "Z")
-
-    # Получаем свежие видео.
+    # Получаем популярные видео YouTube по региону.
     response = requests.get(
-        "https://www.googleapis.com/youtube/v3/search",
+        "https://www.googleapis.com/youtube/v3/videos",
         params={
-            "part": "snippet",
-            "type": "video",
-            "order": "viewCount",
-            "publishedAfter": published_after,
+            "part": "snippet,statistics,contentDetails",
+            "chart": "mostPopular",
             "regionCode": region_code,
             "maxResults": max_results,
             "key": YOUTUBE_API_KEY,
@@ -284,41 +273,7 @@ def search_trending_videos(
     response.raise_for_status()
     data = response.json()
 
-    search_results = data.get("items", [])
-
-    if not search_results:
-        return {
-            "count": 0,
-            "videos": [],
-        }
-
-    video_ids = [
-        item["id"]["videoId"]
-        for item in search_results
-        if item.get("id", {}).get("videoId")
-    ]
-
-    if not video_ids:
-        return {
-            "count": 0,
-            "videos": [],
-        }
-
-    # Получаем подробную статистику.
-    stats_response = requests.get(
-        "https://www.googleapis.com/youtube/v3/videos",
-        params={
-            "part": "snippet,statistics,contentDetails",
-            "id": ",".join(video_ids),
-            "key": YOUTUBE_API_KEY,
-        },
-        timeout=30,
-    )
-
-    stats_response.raise_for_status()
-    stats_data = stats_response.json()
-
-    # Темы, которые пока не изучаем.
+    # Темы, которые мы пока не изучаем.
     excluded_words = [
         "politics",
         "political",
@@ -326,19 +281,29 @@ def search_trending_videos(
         "breaking news",
         "podcast",
         "podcasts",
+        "stream",
+        "streams",
+        "livestream",
+        "live stream",
+        "live streaming",
+        "стрим",
+        "стримы",
+        "стриминг",
+        "прямой эфир",
         "политика",
         "политический",
         "новости",
         "подкаст",
     ]
 
+    # Категория News & Politics.
     excluded_category_ids = {
-        "25",  # News & Politics
+        "25",
     }
 
     videos = []
 
-    for video in stats_data.get("items", []):
+    for video in data.get("items", []):
 
         snippet = video.get("snippet", {})
         statistics = video.get("statistics", {})
@@ -355,16 +320,26 @@ def search_trending_videos(
             f"{channel_title}"
         ).lower()
 
-        # Исключаем нежелательные категории.
+        # ----------------------------------------------------
+        # ИСКЛЮЧАЕМ NEWS & POLITICS
+        # ----------------------------------------------------
+
         if category_id in excluded_category_ids:
             continue
 
-        # Исключаем нежелательные темы по словам.
+        # ----------------------------------------------------
+        # ИСКЛЮЧАЕМ НЕЖЕЛАТЕЛЬНЫЕ ТЕМЫ ПО СЛОВАМ
+        # ----------------------------------------------------
+
         if any(
             word in searchable_text
             for word in excluded_words
         ):
             continue
+
+        # ----------------------------------------------------
+        # СОХРАНЯЕМ ВИДЕО
+        # ----------------------------------------------------
 
         videos.append({
             "video_id": video["id"],
@@ -380,16 +355,7 @@ def search_trending_videos(
             "duration": content_details.get("duration"),
         })
 
-    # Сортируем после фильтрации.
-    videos.sort(
-        key=lambda video: int(video["views"] or 0),
-        reverse=True,
-    )
-
-    videos = videos[:max_results]
-
     return {
-        "hours": hours,
         "region_code": region_code,
         "count": len(videos),
         "videos": videos,
