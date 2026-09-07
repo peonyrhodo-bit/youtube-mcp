@@ -42,6 +42,50 @@ def youtube_get(endpoint: str, params: dict) -> dict:
 # ============================================================
 
 @mcp.tool()
+def get_video_stats(video_ids: list[str]):
+    """
+    Получает свежую статистику для списка YouTube video IDs.
+    Максимум 50 видео за один запрос.
+    """
+    if not video_ids:
+        return {
+            "videos": []
+        }
+
+    video_ids = video_ids[:50]
+
+    data = youtube_get(
+        "videos",
+        {
+            "part": "snippet,statistics,contentDetails",
+            "id": ",".join(video_ids),
+        },
+    )
+
+    videos = []
+
+    for item in data.get("items", []):
+        statistics = item.get("statistics", {})
+        snippet = item.get("snippet", {})
+        content_details = item.get("contentDetails", {})
+
+        videos.append({
+            "video_id": item["id"],
+            "title": snippet.get("title", ""),
+            "channel_id": snippet.get("channelId"),
+            "channel_title": snippet.get("channelTitle", ""),
+            "published_at": snippet.get("publishedAt"),
+            "views": int(statistics.get("viewCount", 0) or 0),
+            "likes": int(statistics.get("likeCount", 0) or 0),
+            "comments": int(statistics.get("commentCount", 0) or 0),
+            "duration": content_details.get("duration"),
+        })
+
+    return {
+        "videos": videos
+    }
+
+@mcp.tool()
 def get_channel_stats(channel_id: str) -> dict:
     """Получить статистику YouTube-канала."""
 
