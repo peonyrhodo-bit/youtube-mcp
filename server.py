@@ -1,147 +1,62 @@
 import os
 import requests
-
 from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import FastMCP
 from fastapi import FastAPI
 
 
-# =========================================================
-# MCP
-# =========================================================
+# ============================================================
+# MCP SERVER
+# ============================================================
 
 mcp = FastMCP(
     "YouTube Statistics",
     host="0.0.0.0",
-    port=int(os.environ.get("PORT", "10000"))
+    port=int(os.environ.get("PORT", "10000")),
 )
-
 
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 
 
-# =========================================================
-# РЕГИОНЫ И ЯЗЫКИ
-# =========================================================
+# ============================================================
+# YOUTUBE API HELPER
+# ============================================================
 
-REGION_CONFIG = {
-    "US": {
-        "language": "en",
-        "queries": [
-            "how to|review|tutorial|tips|ideas",
-            "new|best|interesting|amazing|experiment",
-            "technology|business|science|education",
-            "food|travel|fitness|home|DIY",
-            "animals|gaming|cars|beauty|lifestyle",
-        ],
-    },
-
-    "RU": {
-        "language": "ru",
-        "queries": [
-            "как сделать|обзор|урок|советы|идеи",
-            "новое|лучшее|интересное|эксперимент",
-            "технологии|бизнес|наука|образование",
-            "еда|путешествия|фитнес|дом|DIY",
-            "животные|игры|авто|красота|лайфстайл",
-        ],
-    },
-
-    "IN": {
-        "language": "en",
-        "queries": [
-            "how to|review|tutorial|tips|ideas",
-            "new|best|interesting|amazing|experiment",
-            "technology|business|science|education",
-            "food|travel|fitness|home|DIY",
-            "gaming|cars|beauty|lifestyle|india",
-        ],
-    },
-
-    "ZA": {
-        "language": "en",
-        "queries": [
-            "how to|review|tutorial|tips|ideas",
-            "new|best|interesting|amazing|experiment",
-            "technology|business|science|education",
-            "food|travel|fitness|home|DIY",
-            "animals|gaming|cars|beauty|lifestyle",
-        ],
-    },
-
-    "CN": {
-        "language": "zh-Hans",
-        "queries": [
-            "怎么做|教程|技巧|方法|创意",
-            "最新|最好|有趣|实验|推荐",
-            "科技|商业|科学|教育",
-            "美食|旅行|健身|家居|DIY",
-            "动物|游戏|汽车|美容|生活",
-        ],
-    },
-}
-
-
-# =========================================================
-# ИСКЛЮЧЕНИЯ
-# =========================================================
-
-EXCLUDED_WORDS = [
-    "politics",
-    "political",
-    "news",
-    "breaking news",
-    "podcast",
-    "podcasts",
-    "stream",
-    "streams",
-    "livestream",
-    "live stream",
-    "live streaming",
-
-    "стрим",
-    "стримы",
-    "стриминг",
-    "прямой эфир",
-    "политика",
-    "политический",
-    "новости",
-    "подкаст",
-
-    "政治",
-    "新闻",
-    "播客",
-    "直播",
-]
-
-EXCLUDED_CATEGORY_IDS = {"25"}
-
-
-# =========================================================
-# СТАТИСТИКА КАНАЛА
-# =========================================================
-
-@mcp.tool()
-def get_channel_stats(channel_id: str) -> dict:
+def youtube_get(endpoint: str, params: dict) -> dict:
+    params = dict(params)
+    params["key"] = YOUTUBE_API_KEY
 
     response = requests.get(
-        "https://www.googleapis.com/youtube/v3/channels",
-        params={
-            "part": "snippet,statistics",
-            "id": channel_id,
-            "key": YOUTUBE_API_KEY,
-        },
+        f"https://www.googleapis.com/youtube/v3/{endpoint}",
+        params=params,
         timeout=30,
     )
 
     response.raise_for_status()
+    return response.json()
 
-    data = response.json()
+
+# ============================================================
+# CHANNEL STATISTICS
+# ============================================================
+
+@mcp.tool()
+def get_channel_stats(channel_id: str) -> dict:
+    """Получить статистику YouTube-канала."""
+
+    data = youtube_get(
+        "channels",
+        {
+            "part": "snippet,statistics",
+            "id": channel_id,
+        },
+    )
 
     if not data.get("items"):
         return {
-            "error": "Канал не найден"
+            "error": "Канал не найден",
+            "channel_id": channel_id,
         }
 
     channel = data["items"][0]
@@ -150,7 +65,7 @@ def get_channel_stats(channel_id: str) -> dict:
     statistics = channel.get("statistics", {})
 
     return {
-        "channel_id": channel.get("id"),
+        "channel_id": channel_id,
         "title": snippet.get("title"),
         "description": snippet.get("description"),
         "published_at": snippet.get("publishedAt"),
@@ -160,46 +75,42 @@ def get_channel_stats(channel_id: str) -> dict:
     }
 
 
-# =========================================================
-# ПОИСК КАНАЛОВ
-# =========================================================
+# ============================================================
+# SEARCH CHANNELS
+# ============================================================
 
 @mcp.tool()
 def search_channels(
     query: str,
-    max_results: int = 20
+    max_results: int = 20,
 ) -> dict:
+    """Найти YouTube-каналы по поисковому запросу."""
 
     max_results = min(max(1, max_results), 50)
 
-    response = requests.get(
-        "https://www.googleapis.com/youtube/v3/search",
-        params={
+    data = youtube_get(
+        "search",
+        {
             "part": "snippet",
             "q": query,
             "type": "channel",
             "maxResults": max_results,
-            "key": YOUTUBE_API_KEY,
         },
-        timeout=30,
     )
-
-    response.raise_for_status()
-
-    data = response.json()
 
     channels = []
 
     for item in data.get("items", []):
-
         snippet = item.get("snippet", {})
 
-        channels.append({
-            "channel_id": item.get("id", {}).get("channelId"),
-            "title": snippet.get("title", ""),
-            "description": snippet.get("description", ""),
-            "published_at": snippet.get("publishedAt"),
-        })
+        channels.append(
+            {
+                "channel_id": item.get("id", {}).get("channelId"),
+                "title": snippet.get("title"),
+                "description": snippet.get("description"),
+                "published_at": snippet.get("publishedAt"),
+            }
+        )
 
     return {
         "query": query,
@@ -208,9 +119,9 @@ def search_channels(
     }
 
 
-# =========================================================
-# ПОИСК ВИДЕО
-# =========================================================
+# ============================================================
+# SEARCH VIDEOS
+# ============================================================
 
 @mcp.tool()
 def search_videos(
@@ -222,6 +133,7 @@ def search_videos(
     relevance_language: str | None = None,
     order: str = "viewCount",
 ) -> dict:
+    """Найти YouTube-видео и получить их статистику."""
 
     max_results = min(max(1, max_results), 50)
 
@@ -231,7 +143,6 @@ def search_videos(
         "type": "video",
         "maxResults": max_results,
         "order": order,
-        "key": YOUTUBE_API_KEY,
     }
 
     if published_after:
@@ -246,138 +157,164 @@ def search_videos(
     if relevance_language:
         params["relevanceLanguage"] = relevance_language
 
-    response = requests.get(
-        "https://www.googleapis.com/youtube/v3/search",
-        params=params,
-        timeout=30,
+    search_data = youtube_get(
+        "search",
+        params,
     )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    videos = []
 
     video_ids = []
 
-    for item in data.get("items", []):
+    basic_videos = {}
 
+    for item in search_data.get("items", []):
         video_id = item.get("id", {}).get("videoId")
 
         if not video_id:
             continue
 
-        video_ids.append(video_id)
-
         snippet = item.get("snippet", {})
 
-        videos.append({
+        video_ids.append(video_id)
+
+        basic_videos[video_id] = {
             "video_id": video_id,
             "title": snippet.get("title", ""),
             "description": snippet.get("description", ""),
             "channel_id": snippet.get("channelId"),
             "channel_title": snippet.get("channelTitle", ""),
             "published_at": snippet.get("publishedAt"),
-        })
-
+        }
 
     if not video_ids:
-
         return {
             "query": query,
             "count": 0,
             "videos": [],
         }
 
-
     detailed_videos = {}
 
     for start in range(0, len(video_ids), 50):
-
         batch = video_ids[start:start + 50]
 
-        stats_response = requests.get(
-            "https://www.googleapis.com/youtube/v3/videos",
-            params={
+        data = youtube_get(
+            "videos",
+            {
                 "part": "snippet,statistics,contentDetails",
                 "id": ",".join(batch),
-                "key": YOUTUBE_API_KEY,
             },
-            timeout=30,
         )
 
-        stats_response.raise_for_status()
-
-        stats_data = stats_response.json()
-
-        for video in stats_data.get("items", []):
-
+        for video in data.get("items", []):
             detailed_videos[video["id"]] = video
 
+    videos = []
 
-    result_videos = []
+    for video_id in video_ids:
+        video = detailed_videos.get(video_id)
 
-    for video in videos:
-
-        detailed = detailed_videos.get(
-            video["video_id"]
-        )
-
-        if not detailed:
+        if not video:
             continue
 
-        snippet = detailed.get("snippet", {})
-        statistics = detailed.get("statistics", {})
-        content_details = detailed.get("contentDetails", {})
+        snippet = video.get("snippet", {})
+        statistics = video.get("statistics", {})
+        content_details = video.get("contentDetails", {})
 
-        result_videos.append({
-            **video,
-            "views": statistics.get("viewCount"),
-            "likes": statistics.get("likeCount"),
-            "comments": statistics.get("commentCount"),
-            "duration": content_details.get("duration"),
-            "category_id": snippet.get("categoryId"),
-        })
-
+        videos.append(
+            {
+                "video_id": video_id,
+                "title": snippet.get(
+                    "title",
+                    basic_videos[video_id]["title"],
+                ),
+                "description": snippet.get(
+                    "description",
+                    basic_videos[video_id]["description"],
+                ),
+                "channel_id": snippet.get(
+                    "channelId",
+                    basic_videos[video_id]["channel_id"],
+                ),
+                "channel_title": snippet.get(
+                    "channelTitle",
+                    basic_videos[video_id]["channel_title"],
+                ),
+                "published_at": snippet.get(
+                    "publishedAt",
+                    basic_videos[video_id]["published_at"],
+                ),
+                "views": statistics.get("viewCount"),
+                "likes": statistics.get("likeCount"),
+                "comments": statistics.get("commentCount"),
+                "duration": content_details.get("duration"),
+                "category_id": snippet.get("categoryId"),
+                "default_language": snippet.get("defaultLanguage"),
+            }
+        )
 
     return {
         "query": query,
-        "count": len(result_videos),
-        "videos": result_videos,
+        "count": len(videos),
+        "videos": videos,
     }
 
 
-# =========================================================
-# 🔥 ТРЕНДЫ YOUTUBE
-# =========================================================
+# ============================================================
+# YOUTUBE TRENDS
+# ============================================================
 
 @mcp.tool()
 def search_trending_videos(
     max_results: int = 50,
     region_code: str = "US",
 ) -> dict:
+    """
+    Получить актуальные YouTube-тренды по региону.
+
+    Это именно региональный YouTube chart,
+    а не языковой радар.
+    """
 
     max_results = min(max(1, max_results), 50)
 
-    response = requests.get(
-        "https://www.googleapis.com/youtube/v3/videos",
-        params={
+    excluded_words = [
+        "politics",
+        "political",
+        "news",
+        "breaking news",
+        "podcast",
+        "podcasts",
+        "stream",
+        "streams",
+        "livestream",
+        "live stream",
+        "live streaming",
+        "стрим",
+        "стримы",
+        "стриминг",
+        "прямой эфир",
+        "политика",
+        "политический",
+        "новости",
+        "подкаст",
+    ]
+
+    excluded_category_ids = {"25"}
+
+    data = youtube_get(
+        "videos",
+        {
             "part": "snippet,statistics,contentDetails",
             "chart": "mostPopular",
             "regionCode": region_code,
             "maxResults": max_results,
-            "key": YOUTUBE_API_KEY,
         },
-        timeout=30,
     )
-
-    response.raise_for_status()
-
-    data = response.json()
 
     videos = []
 
     for video in data.get("items", []):
+        video_id = video.get("id")
 
         snippet = video.get("snippet", {})
         statistics = video.get("statistics", {})
@@ -389,33 +326,36 @@ def search_trending_videos(
         category_id = snippet.get("categoryId")
 
         searchable_text = (
-            f"{title} "
-            f"{description} "
-            f"{channel_title}"
+            f"{title} {description} {channel_title}"
         ).lower()
 
-        if category_id in EXCLUDED_CATEGORY_IDS:
+        if category_id in excluded_category_ids:
             continue
 
         if any(
             word in searchable_text
-            for word in EXCLUDED_WORDS
+            for word in excluded_words
         ):
             continue
 
-        videos.append({
-            "video_id": video.get("id"),
-            "title": title,
-            "description": description,
-            "channel_id": snippet.get("channelId"),
-            "channel_title": channel_title,
-            "published_at": snippet.get("publishedAt"),
-            "views": statistics.get("viewCount"),
-            "likes": statistics.get("likeCount"),
-            "comments": statistics.get("commentCount"),
-            "duration": content_details.get("duration"),
-            "category_id": category_id,
-        })
+        videos.append(
+            {
+                "video_id": video_id,
+                "title": title,
+                "description": description,
+                "channel_id": snippet.get("channelId"),
+                "channel_title": channel_title,
+                "published_at": snippet.get("publishedAt"),
+                "views": statistics.get("viewCount"),
+                "likes": statistics.get("likeCount"),
+                "comments": statistics.get("commentCount"),
+                "duration": content_details.get("duration"),
+                "category_id": category_id,
+                "default_language": snippet.get(
+                    "defaultLanguage"
+                ),
+            }
+        )
 
     return {
         "region_code": region_code,
@@ -424,127 +364,196 @@ def search_trending_videos(
     }
 
 
-# =========================================================
-# 🚀 РАДАР РОСТА
-# =========================================================
+# ============================================================
+# LANGUAGE CONFIGURATION FOR GROWTH RADAR
+# ============================================================
+
+LANGUAGE_CONFIG = {
+    "ru": {
+        "label": "Русский",
+        "relevance_language": "ru",
+        "query_groups": [
+            "как|обзор|урок|советы|идеи",
+            "новый|лучший|интересный|эксперимент",
+            "технологии|бизнес|наука|образование",
+            "еда|путешествия|фитнес|дом|DIY",
+            "животные|игры|авто|красота|лайфстайл",
+        ],
+    },
+
+    "en": {
+        "label": "English",
+        "relevance_language": "en",
+        "query_groups": [
+            "how to|review|tutorial|tips|ideas",
+            "new|best|interesting|amazing|experiment",
+            "technology|business|science|education",
+            "food|travel|fitness|home|DIY",
+            "animals|gaming|cars|beauty|lifestyle",
+        ],
+    },
+
+    "hi": {
+        "label": "हिन्दी",
+        "relevance_language": "hi",
+        "query_groups": [
+            "कैसे|समीक्षा|ट्यूटोरियल|सलाह|विचार",
+            "नया|सबसे अच्छा|रोचक|प्रयोग",
+            "तकनीक|बिजनेस|विज्ञान|शिक्षा",
+            "खाना|यात्रा|फिटनेस|घर|DIY",
+            "जानवर|गेमिंग|कार|ब्यूटी|लाइफस्टाइल",
+        ],
+    },
+
+    "zh-Hans": {
+        "label": "中文",
+        "relevance_language": "zh-Hans",
+        "query_groups": [
+            "教程|评测|技巧|建议|创意",
+            "最新|最好|有趣|实验",
+            "科技|商业|科学|教育",
+            "美食|旅行|健身|家居|DIY",
+            "动物|游戏|汽车|美容|生活",
+        ],
+    },
+}
+
+
+# ============================================================
+# EXCLUSIONS
+# ============================================================
+
+RADAR_EXCLUDED_WORDS = [
+    "politics",
+    "political",
+    "news",
+    "breaking news",
+    "podcast",
+    "podcasts",
+    "stream",
+    "streams",
+    "livestream",
+    "live stream",
+    "live streaming",
+    "стрим",
+    "стримы",
+    "стриминг",
+    "прямой эфир",
+    "политика",
+    "политический",
+    "новости",
+    "подкаст",
+]
+
+RADAR_EXCLUDED_CATEGORY_IDS = {
+    "25",
+}
+
+
+# ============================================================
+# GROWTH RADAR
+# ============================================================
 
 @mcp.tool()
 def search_radar_videos(
     max_results: int = 50,
-    region_code: str = "US",
+    language: str = "ru",
     hours_back: int = 72,
 ) -> dict:
+    """
+    Найти свежие быстрорастущие YouTube-видео
+    по выбранному языку и посчитать текущий темп просмотров.
+    """
 
     max_results = min(max(1, max_results), 50)
 
     hours_back = min(
         max(1, hours_back),
-        168
+        168,
     )
 
+    if language not in LANGUAGE_CONFIG:
+        language = "en"
 
-    region_code = region_code.upper()
-
-    config = REGION_CONFIG.get(
-        region_code,
-        REGION_CONFIG["US"]
-    )
-
-    relevance_language = config["language"]
-
-    query_groups = config["queries"]
-
+    config = LANGUAGE_CONFIG[language]
 
     published_after = (
         datetime.now(timezone.utc)
         - timedelta(hours=hours_back)
     ).isoformat().replace("+00:00", "Z")
 
-
     found_videos = {}
 
+    # --------------------------------------------------------
+    # SEARCH
+    # --------------------------------------------------------
 
-    # ---------------------------------------------------------
-    # Ищем свежие видео по нескольким тематическим группам
-    # ---------------------------------------------------------
+    for query in config["query_groups"]:
 
-    for query in query_groups:
-
-        response = requests.get(
-            "https://www.googleapis.com/youtube/v3/search",
-            params={
+        search_data = youtube_get(
+            "search",
+            {
                 "part": "snippet",
                 "q": query,
                 "type": "video",
                 "maxResults": 50,
                 "order": "viewCount",
                 "publishedAfter": published_after,
-                "regionCode": region_code,
-                "relevanceLanguage": relevance_language,
-                "key": YOUTUBE_API_KEY,
+                "relevanceLanguage": config[
+                    "relevance_language"
+                ],
             },
-            timeout=30,
         )
 
-        response.raise_for_status()
-
-        data = response.json()
-
-
-        for item in data.get("items", []):
+        for item in search_data.get("items", []):
 
             video_id = item.get(
                 "id",
-                {}
+                {},
             ).get("videoId")
 
             if not video_id:
                 continue
 
-
             snippet = item.get(
                 "snippet",
-                {}
+                {},
             )
-
 
             found_videos[video_id] = {
                 "video_id": video_id,
                 "title": snippet.get(
                     "title",
-                    ""
+                    "",
                 ),
                 "description": snippet.get(
                     "description",
-                    ""
+                    "",
                 ),
                 "channel_id": snippet.get(
                     "channelId"
                 ),
                 "channel_title": snippet.get(
                     "channelTitle",
-                    ""
+                    "",
                 ),
                 "published_at": snippet.get(
                     "publishedAt"
                 ),
             }
 
-
     if not found_videos:
-
         return {
-            "region_code": region_code,
-            "language": relevance_language,
+            "language": language,
+            "language_label": config["label"],
             "hours_back": hours_back,
             "count": 0,
             "videos": [],
         }
 
-
-    # ---------------------------------------------------------
-    # Получаем подробную статистику
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # GET VIDEO STATISTICS
+    # --------------------------------------------------------
 
     video_ids = list(
         found_videos.keys()
@@ -552,53 +561,39 @@ def search_radar_videos(
 
     detailed_videos = {}
 
-
     for start in range(
         0,
         len(video_ids),
-        50
+        50,
     ):
 
         batch = video_ids[
             start:start + 50
         ]
 
-
-        stats_response = requests.get(
-            "https://www.googleapis.com/youtube/v3/videos",
-            params={
+        stats_data = youtube_get(
+            "videos",
+            {
                 "part": "snippet,statistics,contentDetails",
                 "id": ",".join(batch),
-                "key": YOUTUBE_API_KEY,
             },
-            timeout=30,
         )
-
-        stats_response.raise_for_status()
-
-        stats_data = stats_response.json()
-
 
         for video in stats_data.get(
             "items",
             []
         ):
-
             detailed_videos[
                 video["id"]
             ] = video
 
+    # --------------------------------------------------------
+    # CALCULATE RADAR
+    # --------------------------------------------------------
 
-    # ---------------------------------------------------------
-    # Рассчитываем скорость роста
-    # ---------------------------------------------------------
-
-    now = datetime.now(
-        timezone.utc
-    )
+    now = datetime.now(timezone.utc)
 
     radar_videos = []
-
 
     for video_id, base_video in found_videos.items():
 
@@ -608,7 +603,6 @@ def search_radar_videos(
 
         if not video:
             continue
-
 
         snippet = video.get(
             "snippet",
@@ -625,26 +619,24 @@ def search_radar_videos(
             {}
         )
 
-
         title = snippet.get(
             "title",
-            base_video["title"]
+            base_video["title"],
         )
 
         description = snippet.get(
             "description",
-            base_video["description"]
+            base_video["description"],
         )
 
         channel_title = snippet.get(
             "channelTitle",
-            base_video["channel_title"]
+            base_video["channel_title"],
         )
 
         category_id = snippet.get(
             "categoryId"
         )
-
 
         searchable_text = (
             f"{title} "
@@ -652,193 +644,172 @@ def search_radar_videos(
             f"{channel_title}"
         ).lower()
 
+        # ----------------------------------------------------
+        # EXCLUDE NEWS / POLITICS / PODCASTS / STREAMS
+        # ----------------------------------------------------
 
-        # -----------------------------------------------------
-        # Исключаем новости / политику / подкасты / стримы
-        # -----------------------------------------------------
-
-        if category_id in EXCLUDED_CATEGORY_IDS:
+        if category_id in RADAR_EXCLUDED_CATEGORY_IDS:
             continue
-
 
         if any(
             word in searchable_text
-            for word in EXCLUDED_WORDS
+            for word in RADAR_EXCLUDED_WORDS
         ):
             continue
 
+        # ----------------------------------------------------
+        # PUBLISHED DATE
+        # ----------------------------------------------------
 
         published_at = snippet.get(
             "publishedAt",
-            base_video["published_at"]
+            base_video["published_at"],
         )
-
 
         if not published_at:
             continue
 
-
         try:
-
             published_dt = datetime.fromisoformat(
                 published_at.replace(
                     "Z",
-                    "+00:00"
+                    "+00:00",
                 )
             )
-
         except ValueError:
-
             continue
-
 
         age_hours = (
             now - published_dt
         ).total_seconds() / 3600
 
-
         age_hours = max(
             age_hours,
-            0.1
+            0.1,
         )
 
+        # ----------------------------------------------------
+        # VIEWS
+        # ----------------------------------------------------
 
         try:
-
             views = int(
                 statistics.get(
                     "viewCount",
-                    0
+                    0,
                 )
             )
-
         except (
             TypeError,
-            ValueError
+            ValueError,
         ):
-
             views = 0
 
-
-        # -----------------------------------------------------
-        # Минимальный порог просмотров
-        # -----------------------------------------------------
+        # ----------------------------------------------------
+        # AGE-AWARE MINIMUM VIEW FILTER
+        # ----------------------------------------------------
 
         if age_hours <= 6:
-
             min_views = 100
 
         elif age_hours <= 12:
-
             min_views = 300
 
         elif age_hours <= 24:
-
             min_views = 500
 
         elif age_hours <= 48:
-
             min_views = 1000
 
         else:
-
             min_views = 2000
-
 
         if views < min_views:
             continue
 
-
-        # -----------------------------------------------------
-        # Скорость
-        # -----------------------------------------------------
+        # ----------------------------------------------------
+        # SPEED
+        # ----------------------------------------------------
 
         views_per_hour = (
             views / age_hours
         )
 
+        radar_videos.append(
+            {
+                "video_id": video_id,
 
-        radar_videos.append({
+                "title": title,
 
-            "video_id": video_id,
+                "description": description,
 
-            "title": title,
+                "channel_id": snippet.get(
+                    "channelId",
+                    base_video["channel_id"],
+                ),
 
-            "description": description,
+                "channel_title": channel_title,
 
-            "channel_id": snippet.get(
-                "channelId",
-                base_video["channel_id"]
-            ),
+                "published_at": published_at,
 
-            "channel_title": channel_title,
+                "views": views,
 
-            "published_at": published_at,
+                "likes": statistics.get(
+                    "likeCount"
+                ),
 
-            "views": views,
+                "comments": statistics.get(
+                    "commentCount"
+                ),
 
-            "likes": statistics.get(
-                "likeCount"
-            ),
+                "duration": content_details.get(
+                    "duration"
+                ),
 
-            "comments": statistics.get(
-                "commentCount"
-            ),
+                "category_id": category_id,
 
-            "duration": content_details.get(
-                "duration"
-            ),
+                "default_language": snippet.get(
+                    "defaultLanguage"
+                ),
 
-            "category_id": category_id,
+                "age_hours": round(
+                    age_hours,
+                    1,
+                ),
 
-            "age_hours": round(
-                age_hours,
-                1
-            ),
+                "views_per_hour": round(
+                    views_per_hour
+                ),
+            }
+        )
 
-            "views_per_hour": round(
-                views_per_hour
-            ),
-
-        })
-
-
-    # ---------------------------------------------------------
-    # Сортировка по скорости
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # SORT BY SPEED
+    # --------------------------------------------------------
 
     radar_videos.sort(
-        key=lambda video:
-            video["views_per_hour"],
-        reverse=True
+        key=lambda video: video[
+            "views_per_hour"
+        ],
+        reverse=True,
     )
-
 
     radar_videos = radar_videos[
         :max_results
     ]
 
-
     return {
-
-        "region_code": region_code,
-
-        "language": relevance_language,
-
+        "language": language,
+        "language_label": config["label"],
         "hours_back": hours_back,
-
-        "count": len(
-            radar_videos
-        ),
-
+        "count": len(radar_videos),
         "videos": radar_videos,
-
     }
 
 
-# =========================================================
-# ТЕСТОВЫЙ FASTAPI
-# =========================================================
+# ============================================================
+# TEST ENDPOINT
+# ============================================================
 
 app = FastAPI()
 
@@ -846,14 +817,22 @@ app = FastAPI()
 @app.get("/mcp-tools")
 async def mcp_tools():
 
+    tools = await mcp.list_tools()
+
     return {
-        "message": "MCP server is running"
+        "tools": [
+            {
+                "name": tool.name,
+                "description": tool.description,
+            }
+            for tool in tools
+        ]
     }
 
 
-# =========================================================
-# ЗАПУСК
-# =========================================================
+# ============================================================
+# START SERVER
+# ============================================================
 
 if __name__ == "__main__":
 
