@@ -1,14 +1,11 @@
+```python
 import os
 import requests
+
 from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import FastMCP
-from fastapi import FastAPI
 
-
-# ============================================================
-# MCP SERVER
-# ============================================================
 
 mcp = FastMCP(
     "YouTube Statistics",
@@ -16,12 +13,9 @@ mcp = FastMCP(
     port=int(os.environ.get("PORT", "10000")),
 )
 
+
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 
-
-# ============================================================
-# YOUTUBE API HELPER
-# ============================================================
 
 def youtube_get(endpoint: str, params: dict) -> dict:
     params = dict(params)
@@ -34,19 +28,18 @@ def youtube_get(endpoint: str, params: dict) -> dict:
     )
 
     response.raise_for_status()
+
     return response.json()
 
 
-# ============================================================
-# CHANNEL STATISTICS
-# ============================================================
-
 @mcp.tool()
-def get_video_stats(video_ids: list[str]):
+def get_video_stats(video_ids: list[str]) -> dict:
     """
     Получает свежую статистику для списка YouTube video IDs.
+
     Максимум 50 видео за один запрос.
     """
+
     if not video_ids:
         return {
             "videos": []
@@ -69,25 +62,35 @@ def get_video_stats(video_ids: list[str]):
         snippet = item.get("snippet", {})
         content_details = item.get("contentDetails", {})
 
-        videos.append({
-            "video_id": item["id"],
-            "title": snippet.get("title", ""),
-            "channel_id": snippet.get("channelId"),
-            "channel_title": snippet.get("channelTitle", ""),
-            "published_at": snippet.get("publishedAt"),
-            "views": int(statistics.get("viewCount", 0) or 0),
-            "likes": int(statistics.get("likeCount", 0) or 0),
-            "comments": int(statistics.get("commentCount", 0) or 0),
-            "duration": content_details.get("duration"),
-        })
+        videos.append(
+            {
+                "video_id": item["id"],
+                "title": snippet.get("title", ""),
+                "channel_id": snippet.get("channelId"),
+                "channel_title": snippet.get("channelTitle", ""),
+                "published_at": snippet.get("publishedAt"),
+                "views": int(statistics.get("viewCount", 0) or 0),
+                "likes": int(statistics.get("likeCount", 0) or 0),
+                "comments": int(statistics.get("commentCount", 0) or 0),
+                "duration": content_details.get("duration"),
+            }
+        )
 
     return {
         "videos": videos
     }
 
+
 @mcp.tool()
 def get_channel_stats(channel_id: str) -> dict:
     """Получить статистику YouTube-канала."""
+
+    channel_id = channel_id.strip()
+
+    if not channel_id:
+        return {
+            "error": "channel_id не может быть пустым"
+        }
 
     data = youtube_get(
         "channels",
@@ -119,16 +122,19 @@ def get_channel_stats(channel_id: str) -> dict:
     }
 
 
-# ============================================================
-# SEARCH CHANNELS
-# ============================================================
-
 @mcp.tool()
 def search_channels(
     query: str,
     max_results: int = 20,
 ) -> dict:
     """Найти YouTube-каналы по поисковому запросу."""
+
+    query = query.strip()
+
+    if not query:
+        return {
+            "error": "query не может быть пустым"
+        }
 
     max_results = min(max(1, max_results), 50)
 
@@ -163,10 +169,6 @@ def search_channels(
     }
 
 
-# ============================================================
-# SEARCH VIDEOS
-# ============================================================
-
 @mcp.tool()
 def search_videos(
     query: str,
@@ -178,6 +180,13 @@ def search_videos(
     order: str = "viewCount",
 ) -> dict:
     """Найти YouTube-видео и получить их статистику."""
+
+    query = query.strip()
+
+    if not query:
+        return {
+            "error": "query не может быть пустым"
+        }
 
     max_results = min(max(1, max_results), 50)
 
@@ -207,7 +216,6 @@ def search_videos(
     )
 
     video_ids = []
-
     basic_videos = {}
 
     for item in search_data.get("items", []):
@@ -303,21 +311,12 @@ def search_videos(
     }
 
 
-# ============================================================
-# YOUTUBE TRENDS
-# ============================================================
-
 @mcp.tool()
 def search_trending_videos(
     max_results: int = 50,
     region_code: str = "US",
 ) -> dict:
-    """
-    Получить актуальные YouTube-тренды по региону.
-
-    Это именно региональный YouTube chart,
-    а не языковой радар.
-    """
+    """Получить актуальные YouTube-тренды по региону."""
 
     max_results = min(max(1, max_results), 50)
 
@@ -343,7 +342,9 @@ def search_trending_videos(
         "подкаст",
     ]
 
-    excluded_category_ids = {"25"}
+    excluded_category_ids = {
+        "25"
+    }
 
     data = youtube_get(
         "videos",
@@ -359,7 +360,6 @@ def search_trending_videos(
 
     for video in data.get("items", []):
         video_id = video.get("id")
-
         snippet = video.get("snippet", {})
         statistics = video.get("statistics", {})
         content_details = video.get("contentDetails", {})
@@ -370,7 +370,9 @@ def search_trending_videos(
         category_id = snippet.get("categoryId")
 
         searchable_text = (
-            f"{title} {description} {channel_title}"
+            f"{title} "
+            f"{description} "
+            f"{channel_title}"
         ).lower()
 
         if category_id in excluded_category_ids:
@@ -395,9 +397,7 @@ def search_trending_videos(
                 "comments": statistics.get("commentCount"),
                 "duration": content_details.get("duration"),
                 "category_id": category_id,
-                "default_language": snippet.get(
-                    "defaultLanguage"
-                ),
+                "default_language": snippet.get("defaultLanguage"),
             }
         )
 
@@ -407,10 +407,6 @@ def search_trending_videos(
         "videos": videos,
     }
 
-
-# ============================================================
-# LANGUAGE CONFIGURATION FOR GROWTH RADAR
-# ============================================================
 
 LANGUAGE_CONFIG = {
     "ru": {
@@ -424,7 +420,6 @@ LANGUAGE_CONFIG = {
             "животные|игры|авто|красота|лайфстайл",
         ],
     },
-
     "en": {
         "label": "English",
         "relevance_language": "en",
@@ -436,7 +431,6 @@ LANGUAGE_CONFIG = {
             "animals|gaming|cars|beauty|lifestyle",
         ],
     },
-
     "hi": {
         "label": "हिन्दी",
         "relevance_language": "hi",
@@ -448,7 +442,6 @@ LANGUAGE_CONFIG = {
             "जानवर|गेमिंग|कार|ब्यूटी|लाइफस्टाइल",
         ],
     },
-
     "zh-Hans": {
         "label": "中文",
         "relevance_language": "zh-Hans",
@@ -462,10 +455,6 @@ LANGUAGE_CONFIG = {
     },
 }
 
-
-# ============================================================
-# EXCLUSIONS
-# ============================================================
 
 RADAR_EXCLUDED_WORDS = [
     "politics",
@@ -490,13 +479,9 @@ RADAR_EXCLUDED_WORDS = [
 ]
 
 RADAR_EXCLUDED_CATEGORY_IDS = {
-    "25",
+    "25"
 }
 
-
-# ============================================================
-# GROWTH RADAR
-# ============================================================
 
 @mcp.tool()
 def search_radar_videos(
@@ -504,17 +489,10 @@ def search_radar_videos(
     language: str = "ru",
     hours_back: int = 72,
 ) -> dict:
-    """
-    Найти свежие быстрорастущие YouTube-видео
-    по выбранному языку и посчитать текущий темп просмотров.
-    """
+    """Найти свежие быстрорастущие YouTube-видео."""
 
     max_results = min(max(1, max_results), 50)
-
-    hours_back = min(
-        max(1, hours_back),
-        168,
-    )
+    hours_back = min(max(1, hours_back), 168)
 
     if language not in LANGUAGE_CONFIG:
         language = "en"
@@ -524,16 +502,14 @@ def search_radar_videos(
     published_after = (
         datetime.now(timezone.utc)
         - timedelta(hours=hours_back)
-    ).isoformat().replace("+00:00", "Z")
+    ).isoformat().replace(
+        "+00:00",
+        "Z",
+    )
 
     found_videos = {}
 
-    # --------------------------------------------------------
-    # SEARCH
-    # --------------------------------------------------------
-
     for query in config["query_groups"]:
-
         search_data = youtube_get(
             "search",
             {
@@ -543,47 +519,25 @@ def search_radar_videos(
                 "maxResults": 50,
                 "order": "viewCount",
                 "publishedAfter": published_after,
-                "relevanceLanguage": config[
-                    "relevance_language"
-                ],
+                "relevanceLanguage": config["relevance_language"],
             },
         )
 
         for item in search_data.get("items", []):
-
-            video_id = item.get(
-                "id",
-                {},
-            ).get("videoId")
+            video_id = item.get("id", {}).get("videoId")
 
             if not video_id:
                 continue
 
-            snippet = item.get(
-                "snippet",
-                {},
-            )
+            snippet = item.get("snippet", {})
 
             found_videos[video_id] = {
                 "video_id": video_id,
-                "title": snippet.get(
-                    "title",
-                    "",
-                ),
-                "description": snippet.get(
-                    "description",
-                    "",
-                ),
-                "channel_id": snippet.get(
-                    "channelId"
-                ),
-                "channel_title": snippet.get(
-                    "channelTitle",
-                    "",
-                ),
-                "published_at": snippet.get(
-                    "publishedAt"
-                ),
+                "title": snippet.get("title", ""),
+                "description": snippet.get("description", ""),
+                "channel_id": snippet.get("channelId"),
+                "channel_title": snippet.get("channelTitle", ""),
+                "published_at": snippet.get("publishedAt"),
             }
 
     if not found_videos:
@@ -595,25 +549,11 @@ def search_radar_videos(
             "videos": [],
         }
 
-    # --------------------------------------------------------
-    # GET VIDEO STATISTICS
-    # --------------------------------------------------------
-
-    video_ids = list(
-        found_videos.keys()
-    )
-
+    video_ids = list(found_videos.keys())
     detailed_videos = {}
 
-    for start in range(
-        0,
-        len(video_ids),
-        50,
-    ):
-
-        batch = video_ids[
-            start:start + 50
-        ]
+    for start in range(0, len(video_ids), 50):
+        batch = video_ids[start:start + 50]
 
         stats_data = youtube_get(
             "videos",
@@ -623,45 +563,22 @@ def search_radar_videos(
             },
         )
 
-        for video in stats_data.get(
-            "items",
-            []
-        ):
-            detailed_videos[
-                video["id"]
-            ] = video
-
-    # --------------------------------------------------------
-    # CALCULATE RADAR
-    # --------------------------------------------------------
+        for video in stats_data.get("items", []):
+            detailed_videos[video["id"]] = video
 
     now = datetime.now(timezone.utc)
 
     radar_videos = []
 
     for video_id, base_video in found_videos.items():
-
-        video = detailed_videos.get(
-            video_id
-        )
+        video = detailed_videos.get(video_id)
 
         if not video:
             continue
 
-        snippet = video.get(
-            "snippet",
-            {}
-        )
-
-        statistics = video.get(
-            "statistics",
-            {}
-        )
-
-        content_details = video.get(
-            "contentDetails",
-            {}
-        )
+        snippet = video.get("snippet", {})
+        statistics = video.get("statistics", {})
+        content_details = video.get("contentDetails", {})
 
         title = snippet.get(
             "title",
@@ -678,19 +595,13 @@ def search_radar_videos(
             base_video["channel_title"],
         )
 
-        category_id = snippet.get(
-            "categoryId"
-        )
+        category_id = snippet.get("categoryId")
 
         searchable_text = (
             f"{title} "
             f"{description} "
             f"{channel_title}"
         ).lower()
-
-        # ----------------------------------------------------
-        # EXCLUDE NEWS / POLITICS / PODCASTS / STREAMS
-        # ----------------------------------------------------
 
         if category_id in RADAR_EXCLUDED_CATEGORY_IDS:
             continue
@@ -700,10 +611,6 @@ def search_radar_videos(
             for word in RADAR_EXCLUDED_WORDS
         ):
             continue
-
-        # ----------------------------------------------------
-        # PUBLISHED DATE
-        # ----------------------------------------------------
 
         published_at = snippet.get(
             "publishedAt",
@@ -732,10 +639,6 @@ def search_radar_videos(
             0.1,
         )
 
-        # ----------------------------------------------------
-        # VIEWS
-        # ----------------------------------------------------
-
         try:
             views = int(
                 statistics.get(
@@ -743,104 +646,60 @@ def search_radar_videos(
                     0,
                 )
             )
-        except (
-            TypeError,
-            ValueError,
-        ):
+        except (TypeError, ValueError):
             views = 0
-
-        # ----------------------------------------------------
-        # AGE-AWARE MINIMUM VIEW FILTER
-        # ----------------------------------------------------
 
         if age_hours <= 6:
             min_views = 100
-
         elif age_hours <= 12:
             min_views = 300
-
         elif age_hours <= 24:
             min_views = 500
-
         elif age_hours <= 48:
             min_views = 1000
-
         else:
             min_views = 2000
 
         if views < min_views:
             continue
 
-        # ----------------------------------------------------
-        # SPEED
-        # ----------------------------------------------------
-
-        views_per_hour = (
-            views / age_hours
-        )
+        views_per_hour = views / age_hours
 
         radar_videos.append(
             {
                 "video_id": video_id,
-
                 "title": title,
-
                 "description": description,
-
                 "channel_id": snippet.get(
                     "channelId",
                     base_video["channel_id"],
                 ),
-
                 "channel_title": channel_title,
-
                 "published_at": published_at,
-
                 "views": views,
-
-                "likes": statistics.get(
-                    "likeCount"
-                ),
-
-                "comments": statistics.get(
-                    "commentCount"
-                ),
-
-                "duration": content_details.get(
-                    "duration"
-                ),
-
+                "likes": statistics.get("likeCount"),
+                "comments": statistics.get("commentCount"),
+                "duration": content_details.get("duration"),
                 "category_id": category_id,
-
                 "default_language": snippet.get(
                     "defaultLanguage"
                 ),
-
                 "age_hours": round(
                     age_hours,
                     1,
                 ),
-
                 "views_per_hour": round(
                     views_per_hour
                 ),
             }
         )
 
-    # --------------------------------------------------------
-    # SORT BY SPEED
-    # --------------------------------------------------------
-
     radar_videos.sort(
-        key=lambda video: video[
-            "views_per_hour"
-        ],
+        key=lambda video: video["views_per_hour"],
         reverse=True,
     )
 
-    radar_videos = radar_videos[
-        :max_results
-    ]
+    radar_videos = radar_videos[:max_results]
 
     return {
         "language": language,
@@ -851,35 +710,8 @@ def search_radar_videos(
     }
 
 
-# ============================================================
-# TEST ENDPOINT
-# ============================================================
-
-app = FastAPI()
-
-
-@app.get("/mcp-tools")
-async def mcp_tools():
-
-    tools = await mcp.list_tools()
-
-    return {
-        "tools": [
-            {
-                "name": tool.name,
-                "description": tool.description,
-            }
-            for tool in tools
-        ]
-    }
-
-
-# ============================================================
-# START SERVER
-# ============================================================
-
 if __name__ == "__main__":
-
     mcp.run(
         transport="streamable-http"
     )
+```
