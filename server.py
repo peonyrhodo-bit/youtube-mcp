@@ -1,14 +1,33 @@
+import json
+import logging
 import os
+import re
+from typing import Any
+
 import requests
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 
-PORT = int(os.environ.get("PORT", "10000"))
-YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
+# ============================================================
+# CONFIG
+# ============================================================
 
-if not YOUTUBE_API_KEY:
-    raise RuntimeError("YOUTUBE_API_KEY is not set")
+PORT = int(os.environ.get("PORT", "8000"))
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
 
+YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
+
+logger = logging.getLogger("youtube-mcp")
+
+
+# ============================================================
+# MCP
+# ============================================================
 
 mcp = FastMCP(
     "YouTube Statistics",
@@ -17,138 +36,263 @@ mcp = FastMCP(
 )
 
 
-YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
+# ============================================================
+# ERRORS
+# ============================================================
+
+class YouTubeQuotaError(Exception):
+    """YouTube quota or rate-limit error."""
 
 
-def youtube_get(endpoint, params):
-    params = dict(params)
-    params["key"] = YOUTUBE_API_KEY
+# ============================================================
+# HELPERS
+# ============================================================
+
+def sanitize_text(text: str) -> str:
+    """
+    Never allow the YouTube API key to appear in logs/errors.
+    """
+    if not text:
+        return ""
+
+    if YOUTUBE_API_KEY:
+        text = text.replace(YOUTUBE_API_KEY, "***REDACTED***")
+
+    return text
+
+
+def parse_youtube_error(response: requests.Response) -> dict[str, Any]:
+    """
+    Extract a safe subset of the YouTube API error.
+    Never returns the API key.
+    """
+    try:
+        data = response.json()
+    except Exception:
+        return {
+            "status": response.status_code,
+            "reason": "",
+            "message": sanitize_text(response.text[:500]),
+        }
+
+    error = data.get("error", {})
+    reasons = []
+
+    for item in error.get("errors", []):
+        reason = item.get("reason")
+        if reason:
+            reasons.append(str(reason))
+
+    return {
+        "status": response.status_code,
+        "reason": reasons[0] if reasons else "",
+        "message": sanitize_text(
+            str(error.get("message", ""))[:500]
+        ),
+    }
+
+
+def is_quota_error(error_info: dict[str, Any]) -> bool:
+    """
+    Detect quota/rate-limit conditions.
+    """
+    status = error_info.get("status")
+    reason = str(error_info.get("reason", ""))
+
+    if status == 429:
+        return True
+
+    if status == 403 and reason in {
+        "quotaExceeded",
+        "dailyLimitExceeded",
+        "rateLimitExceeded",
+        "userRateLimitExceeded",
+    }:
+        return True
+
+    return False
+
+
+# ============================================================
+# YOUTUBE HTTP
+# ============================================================
+
+def youtube_get(
+    endpoint: str,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Perform a YouTube Data API GET request.
+
+    IMPORTANT:
+    The API key is added to the outgoing request,
+    but is NEVER written to logs.
+    """
+
+    if not YOUTUBE_API_KEY:
+        raise RuntimeError("YOUTUBE_API_KEY is not configured")
+
+    request_params = dict(params or {})
+    request_params["key"] = YOUTUBE_API_KEY
+
+    url = f"{YOUTUBE_API_BASE}/{endpoint}"
 
     try:
         response = requests.get(
-            f"{YOUTUBE_API_BASE}/{endpoint}",
-            params=params,
+            url,
+            params=request_params,
             timeout=30,
         )
 
-        response.raise_for_status()
-        return response.json()
+    except requests.RequestException as exc:
+        safe_error = sanitize_text(str(exc))
 
-    except Exception as error:
-        print(
-            "YOUTUBE_GET_ERROR",
-            {
-                "endpoint": endpoint,
-                "params": params,
-                "error_type": type(error).__name__,
-                "error": str(error),
-            },
-            flush=True,
+        logger.error(
+            "YOUTUBE_HTTP_ERROR endpoint=%s error=%s",
+            endpoint,
+            safe_error,
         )
 
-        raise
+        raise RuntimeError(
+            f"YouTube request failed: {safe_error}"
+        ) from exc
 
+    if not response.ok:
+        error_info = parse_youtube_error(response)
+
+        if is_quota_error(error_info):
+            logger.warning(
+                "YOUTUBE_QUOTA_OR_RATE_LIMIT endpoint=%s status=%s reason=%s",
+                endpoint,
+                error_info.get("status"),
+                error_info.get("reason"),
+            )
+
+            raise YouTubeQuotaError(
+                f"YouTube quota/rate limit: "
+                f"{error_info.get('reason') or error_info.get('status')}"
+            )
+
+        logger.error(
+            "YOUTUBE_API_ERROR endpoint=%s status=%s reason=%s message=%s",
+            endpoint,
+            error_info.get("status"),
+            error_info.get("reason"),
+            error_info.get("message"),
+        )
+
+        raise RuntimeError(
+            f"YouTube API error: "
+            f"{error_info.get('reason') or error_info.get('message')}"
+        )
+
+    try:
+        return response.json()
+
+    except ValueError as exc:
+        logger.error(
+            "YOUTUBE_INVALID_JSON endpoint=%s status=%s",
+            endpoint,
+            response.status_code,
+        )
+
+        raise RuntimeError(
+            "YouTube returned invalid JSON"
+        ) from exc
+
+
+# ============================================================
+# VIDEO STATS
+# ============================================================
 
 @mcp.tool()
-def get_video_stats(video_ids: list[str]) -> list[dict]:
+def get_video_stats(video_ids: list[str]) -> dict[str, Any]:
     """
-    Get statistics and basic information for up to 50 YouTube videos.
+    Get statistics for up to 50 YouTube videos.
     """
 
     if not video_ids:
-        return []
+        return {
+            "items": []
+        }
 
     if len(video_ids) > 50:
-        raise ValueError("Maximum 50 video IDs are allowed")
+        raise ValueError(
+            "Maximum 50 video IDs per request"
+        )
+
+    clean_ids = [
+        str(video_id).strip()
+        for video_id in video_ids
+        if str(video_id).strip()
+    ]
+
+    if not clean_ids:
+        return {
+            "items": []
+        }
 
     data = youtube_get(
         "videos",
         {
             "part": "snippet,statistics,contentDetails",
-            "id": ",".join(video_ids),
+            "id": ",".join(clean_ids),
         },
     )
 
-    result = []
+    return data
 
-    for item in data.get("items", []):
-        snippet = item.get("snippet", {})
-        statistics = item.get("statistics", {})
-        content_details = item.get("contentDetails", {})
 
-        result.append(
-            {
-                "video_id": item.get("id"),
-                "title": snippet.get("title"),
-                "channel_id": snippet.get("channelId"),
-                "channel_title": snippet.get("channelTitle"),
-                "published_at": snippet.get("publishedAt"),
-                "views": int(statistics.get("viewCount", 0)),
-                "likes": int(statistics.get("likeCount", 0)),
-                "comments": int(statistics.get("commentCount", 0)),
-                "duration": content_details.get("duration"),
-            }
-        )
-
-    return result
-
+# ============================================================
+# CHANNEL STATS
+# ============================================================
 
 @mcp.tool()
-def get_channel_stats(channel_id: str) -> dict:
+def get_channel_stats(
+    channel_id: str,
+) -> dict[str, Any]:
     """
-    Get statistics and basic information about a YouTube channel.
+    Get statistics for a YouTube channel.
     """
+
+    channel_id = str(channel_id).strip()
 
     if not channel_id:
         raise ValueError("channel_id is required")
 
-    data = youtube_get(
+    return youtube_get(
         "channels",
         {
-            "part": "snippet,statistics",
+            "part": "snippet,statistics,contentDetails",
             "id": channel_id,
         },
     )
 
-    items = data.get("items", [])
 
-    if not items:
-        return {
-            "channel_id": channel_id,
-            "found": False,
-        }
-
-    item = items[0]
-    snippet = item.get("snippet", {})
-    statistics = item.get("statistics", {})
-
-    return {
-        "channel_id": item.get("id"),
-        "found": True,
-        "title": snippet.get("title"),
-        "description": snippet.get("description"),
-        "published_at": snippet.get("publishedAt"),
-        "subscribers": int(statistics.get("subscriberCount", 0)),
-        "views": int(statistics.get("viewCount", 0)),
-        "videos": int(statistics.get("videoCount", 0)),
-    }
-
+# ============================================================
+# SEARCH CHANNELS
+# ============================================================
 
 @mcp.tool()
 def search_channels(
     query: str,
     max_results: int = 10,
-) -> list[dict]:
+) -> dict[str, Any]:
     """
-    Search YouTube channels by keyword.
+    Search YouTube channels.
     """
+
+    query = str(query).strip()
 
     if not query:
         raise ValueError("query is required")
 
-    max_results = max(1, min(max_results, 50))
+    max_results = max(
+        1,
+        min(int(max_results), 50),
+    )
 
-    data = youtube_get(
+    return youtube_get(
         "search",
         {
             "part": "snippet",
@@ -158,86 +302,121 @@ def search_channels(
         },
     )
 
-    result = []
 
-    for item in data.get("items", []):
-        snippet = item.get("snippet", {})
-
-        result.append(
-            {
-                "channel_id": item.get("snippet", {}).get("channelId"),
-                "title": snippet.get("title"),
-                "description": snippet.get("description"),
-                "published_at": snippet.get("publishedAt"),
-            }
-        )
-
-    return result
-
+# ============================================================
+# SEARCH VIDEOS
+# ============================================================
 
 @mcp.tool()
 def search_videos(
     query: str,
     max_results: int = 10,
-    published_after: str | None = None,
-    published_before: str | None = None,
-    region_code: str | None = None,
+    region_code: str = "US",
     relevance_language: str | None = None,
-    order: str = "viewCount",
-) -> list[dict]:
+) -> dict[str, Any]:
     """
-    Search YouTube videos and return their statistics.
+    Search YouTube videos and enrich results with statistics.
     """
+
+    query = str(query).strip()
 
     if not query:
         raise ValueError("query is required")
 
-    max_results = max(1, min(max_results, 50))
+    max_results = max(
+        1,
+        min(int(max_results), 50),
+    )
 
-    params = {
+    params: dict[str, Any] = {
         "part": "snippet",
         "q": query,
         "type": "video",
         "maxResults": max_results,
-        "order": order,
+        "regionCode": region_code,
     }
-
-    if published_after:
-        params["publishedAfter"] = published_after
-
-    if published_before:
-        params["publishedBefore"] = published_before
-
-    if region_code:
-        params["regionCode"] = region_code
 
     if relevance_language:
         params["relevanceLanguage"] = relevance_language
 
-    search_data = youtube_get("search", params)
+    search_data = youtube_get(
+        "search",
+        params,
+    )
 
-    video_ids = [
-        item.get("id", {}).get("videoId")
-        for item in search_data.get("items", [])
-        if item.get("id", {}).get("videoId")
-    ]
+    items = search_data.get("items", [])
+
+    video_ids = []
+
+    for item in items:
+        video_id = (
+            item.get("id", {})
+            .get("videoId")
+        )
+
+        if video_id:
+            video_ids.append(video_id)
 
     if not video_ids:
-        return []
+        return {
+            "items": items
+        }
 
-    return get_video_stats(video_ids)
+    stats_data = get_video_stats(video_ids)
 
+    stats_by_id = {
+        item.get("id"): item
+        for item in stats_data.get("items", [])
+    }
+
+    enriched_items = []
+
+    for item in items:
+        video_id = (
+            item.get("id", {})
+            .get("videoId")
+        )
+
+        if video_id in stats_by_id:
+            stats_item = stats_by_id[video_id]
+
+            merged = dict(item)
+
+            merged["statistics"] = (
+                stats_item.get("statistics", {})
+            )
+
+            merged["contentDetails"] = (
+                stats_item.get("contentDetails", {})
+            )
+
+            enriched_items.append(merged)
+
+        else:
+            enriched_items.append(item)
+
+    return {
+        "items": enriched_items
+    }
+
+
+# ============================================================
+# TRENDING VIDEOS
+# ============================================================
 
 @mcp.tool()
 def search_trending_videos(
     max_results: int = 50,
     region_code: str = "US",
-) -> list[dict]:
+) -> dict[str, Any]:
     """
-    Get currently popular YouTube videos for a region.
+    Get currently popular YouTube videos.
     """
 
-    max_results = max(1, min(max_results, 50))
+    max_results = max(
+        1,
+        min(int(max_results), 50),
+    )
 
     data = youtube_get(
         "videos",
@@ -249,240 +428,316 @@ def search_trending_videos(
         },
     )
 
-    result = []
+    filtered_items = []
 
-    excluded_words = [
-        "politics",
-        "political",
+    excluded_categories = {
+        "25",
+    }
+
+    excluded_words = {
         "news",
-        "podcast",
-        "live",
-        "election",
-        "president",
-        "government",
+        "politics",
         "политика",
         "новости",
+        "podcast",
         "подкаст",
-        "прямой эфир",
-    ]
+        "live",
+        "стрим",
+        "stream",
+    }
 
     for item in data.get("items", []):
-        snippet = item.get("snippet", {})
-        statistics = item.get("statistics", {})
-        content_details = item.get("contentDetails", {})
-
-        title = snippet.get("title", "")
-        description = snippet.get("description", "")
-
-        text = f"{title} {description}".lower()
-
-        if any(word in text for word in excluded_words):
-            continue
-
-        category_id = snippet.get("categoryId")
-
-        if category_id == "25":
-            continue
-
-        result.append(
-            {
-                "video_id": item.get("id"),
-                "title": title,
-                "channel_id": snippet.get("channelId"),
-                "channel_title": snippet.get("channelTitle"),
-                "published_at": snippet.get("publishedAt"),
-                "views": int(statistics.get("viewCount", 0)),
-                "likes": int(statistics.get("likeCount", 0)),
-                "comments": int(statistics.get("commentCount", 0)),
-                "duration": content_details.get("duration"),
-                "category_id": category_id,
-            }
+        category_id = str(
+            item.get("snippet", {})
+            .get("categoryId", "")
         )
 
-    return result
+        title = str(
+            item.get("snippet", {})
+            .get("title", "")
+        ).lower()
 
+        description = str(
+            item.get("snippet", {})
+            .get("description", "")
+        ).lower()
+
+        text = f"{title} {description}"
+
+        if category_id in excluded_categories:
+            continue
+
+        if any(
+            word in text
+            for word in excluded_words
+        ):
+            continue
+
+        filtered_items.append(item)
+
+    return {
+        "items": filtered_items
+    }
+
+
+# ============================================================
+# RADAR CONFIG
+# ============================================================
 
 LANGUAGE_CONFIG = {
     "ru": [
-        "новинки",
-        "интересное",
         "тренды",
-        "истории",
-        "фильмы",
-        "технологии",
-        "искусственный интеллект",
-        "обучение",
+        "искусственный интеллект технологии",
+        "фильмы истории",
+        "образование интересное",
     ],
     "en": [
-        "trending",
-        "interesting",
-        "stories",
-        "movies",
-        "technology",
-        "artificial intelligence",
-        "education",
+        "trends",
+        "artificial intelligence technology",
+        "movies stories",
+        "education interesting",
     ],
     "hi": [
         "trending",
-        "interesting",
-        "stories",
-        "technology",
+        "artificial intelligence technology",
+        "movies stories",
         "education",
     ],
-    "zh-Hans": [
-        "热门",
-        "趋势",
-        "故事",
-        "电影",
-        "科技",
-        "人工智能",
+    "zh": [
+        "热门趋势",
+        "人工智能 科技",
+        "电影 故事",
         "教育",
     ],
 }
 
 
-RADAR_EXCLUDED_WORDS = [
-    "politics",
-    "political",
-    "election",
-    "president",
-    "government",
+RADAR_EXCLUDED_WORDS = {
     "news",
-    "breaking news",
+    "politics",
     "политика",
-    "политический",
-    "выборы",
-    "президент",
-    "правительство",
     "новости",
-    "срочные новости",
-    "政治",
-    "选举",
-    "总统",
-    "政府",
-    "新闻",
-]
+    "podcast",
+    "подкаст",
+    "live",
+    "стрим",
+    "stream",
+}
 
 
-RADAR_EXCLUDED_CATEGORY_IDS = {"25"}
+RADAR_EXCLUDED_CATEGORY_IDS = {
+    "25",
+}
 
+
+# ============================================================
+# RADAR
+# ============================================================
 
 @mcp.tool()
 def search_radar_videos(
-    max_results: int = 50,
     language: str = "ru",
-    hours_back: int = 72,
-) -> list[dict]:
+    max_results_per_query: int = 10,
+    region_code: str = "US",
+) -> list[dict[str, Any]]:
     """
-    Search recently published videos and rank them by views per hour.
-    This is an early Growth Radar implementation.
+    Broad discovery radar.
+
+    IMPORTANT:
+    If YouTube starts returning quota/rate-limit errors,
+    stop immediately instead of continuing to spend requests.
     """
 
-    max_results = max(1, min(max_results, 50))
+    language = (
+        str(language).strip().lower()
+    )
 
-    if language not in LANGUAGE_CONFIG:
-        language = "ru"
+    queries = LANGUAGE_CONFIG.get(
+        language,
+        LANGUAGE_CONFIG["ru"],
+    )
 
-    hours_back = max(1, min(hours_back, 24 * 30))
+    max_results_per_query = max(
+        1,
+        min(int(max_results_per_query), 25),
+    )
 
-    from datetime import datetime, timedelta, timezone
+    all_items: list[dict[str, Any]] = []
 
-    now_utc = datetime.now(timezone.utc)
-    published_after = now_utc - timedelta(hours=hours_back)
-
-    all_videos = []
-
-    query_groups = LANGUAGE_CONFIG[language]
-
-    per_query = max(5, min(20, max_results))
-
-    for query in query_groups:
+    for query in queries:
         try:
-            videos = search_videos(
+            result = search_videos(
                 query=query,
-                max_results=per_query,
-                published_after=published_after.isoformat(),
-                relevance_language=language,
-                order="date",
+                max_results=max_results_per_query,
+                region_code=region_code,
+                relevance_language=(
+                    language
+                    if language in {
+                        "ru",
+                        "en",
+                        "hi",
+                        "zh",
+                    }
+                    else None
+                ),
             )
 
-            all_videos.extend(videos)
+        except YouTubeQuotaError:
+            logger.warning(
+                "RADAR_STOPPED_QUOTA language=%s query=%s",
+                language,
+                query,
+            )
+            break
 
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "RADAR_QUERY_FAILED language=%s query=%s error_type=%s",
+                language,
+                query,
+                type(exc).__name__,
+            )
             continue
 
-    unique = {}
-
-    for video in all_videos:
-        video_id = video.get("video_id")
-
-        if not video_id:
-            continue
-
-        unique[video_id] = video
-
-    result = []
-
-    for video in unique.values():
-        title = video.get("title", "")
-        description = video.get("description", "")
-
-        text = f"{title} {description}".lower()
-
-        if any(word in text for word in RADAR_EXCLUDED_WORDS):
-            continue
-
-        category_id = video.get("category_id")
-
-        if category_id in RADAR_EXCLUDED_CATEGORY_IDS:
-            continue
-
-        published_at = video.get("published_at")
-
-        if not published_at:
-            continue
-
-        try:
-            published_dt = datetime.fromisoformat(
-                published_at.replace("Z", "+00:00")
+        for item in result.get("items", []):
+            snippet = item.get(
+                "snippet",
+                {},
             )
 
-            age_hours = max(
-                (now_utc - published_dt).total_seconds() / 3600,
-                0.05,
+            statistics = item.get(
+                "statistics",
+                {},
             )
 
-        except Exception:
-            continue
+            category_id = str(
+                snippet.get(
+                    "categoryId",
+                    "",
+                )
+            )
 
-        views = int(video.get("views", 0))
+            title = str(
+                snippet.get(
+                    "title",
+                    "",
+                )
+            )
 
-        views_per_hour = views / age_hours
+            description = str(
+                snippet.get(
+                    "description",
+                    "",
+                )
+            )
 
-        likes = int(video.get("likes", 0))
-        comments = int(video.get("comments", 0))
+            text = (
+                f"{title} {description}"
+            ).lower()
 
-        engagement = 0.0
+            if (
+                category_id
+                in RADAR_EXCLUDED_CATEGORY_IDS
+            ):
+                continue
 
-        if views > 0:
-            engagement = (likes + comments) / views
+            if any(
+                word in text
+                for word in RADAR_EXCLUDED_WORDS
+            ):
+                continue
 
-        video["age_hours"] = round(age_hours, 2)
-        video["views_per_hour"] = round(views_per_hour, 2)
-        video["engagement_rate"] = round(engagement, 6)
+            view_count = int(
+                statistics.get(
+                    "viewCount",
+                    0,
+                )
+                or 0
+            )
 
-        result.append(video)
+            like_count = int(
+                statistics.get(
+                    "likeCount",
+                    0,
+                )
+                or 0
+            )
 
-    result.sort(
-        key=lambda item: (
-            item.get("views_per_hour", 0),
-            item.get("views", 0),
+            comment_count = int(
+                statistics.get(
+                    "commentCount",
+                    0,
+                )
+                or 0
+            )
+
+            published_at = snippet.get(
+                "publishedAt"
+            )
+
+            all_items.append(
+                {
+                    "video_id": (
+                        item.get("id", {})
+                        .get("videoId")
+                        or item.get("id")
+                    ),
+                    "title": title,
+                    "channel_id": snippet.get(
+                        "channelId"
+                    ),
+                    "channel_title": snippet.get(
+                        "channelTitle"
+                    ),
+                    "published_at": published_at,
+                    "description": description,
+                    "category_id": category_id,
+                    "views": view_count,
+                    "likes": like_count,
+                    "comments": comment_count,
+                    "query": query,
+                    "language": language,
+                }
+            )
+
+    # Remove duplicates
+    unique: dict[str, dict[str, Any]] = {}
+
+    for item in all_items:
+        video_id = item.get("video_id")
+
+        if video_id:
+            unique[str(video_id)] = item
+
+    result_items = list(
+        unique.values()
+    )
+
+    # Sort primarily by views
+    result_items.sort(
+        key=lambda x: (
+            x.get("views", 0),
+            x.get("likes", 0),
+            x.get("comments", 0),
         ),
         reverse=True,
     )
 
-    return result[:max_results]
+    return result_items
 
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    logger.info(
+        "Starting YouTube MCP server on port %s",
+        PORT,
+    )
+
+    mcp.run(
+        transport="streamable-http",
+        host="0.0.0.0",
+        port=PORT,
+    )
