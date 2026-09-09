@@ -396,7 +396,7 @@ def search_radar_videos(
 
     per_query = max(5, min(20, max_results))
 
-    for query in query_groups[:10]:
+    for query in query_groups:
         try:
             videos = search_videos(
                 query=query,
