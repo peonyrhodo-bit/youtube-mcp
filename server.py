@@ -24,14 +24,29 @@ def youtube_get(endpoint, params):
     params = dict(params)
     params["key"] = YOUTUBE_API_KEY
 
-    response = requests.get(
-        f"{YOUTUBE_API_BASE}/{endpoint}",
-        params=params,
-        timeout=30,
-    )
+    try:
+        response = requests.get(
+            f"{YOUTUBE_API_BASE}/{endpoint}",
+            params=params,
+            timeout=30,
+        )
 
-    response.raise_for_status()
-    return response.json()
+        response.raise_for_status()
+        return response.json()
+
+    except Exception as error:
+        print(
+            "YOUTUBE_GET_ERROR",
+            {
+                "endpoint": endpoint,
+                "params": params,
+                "error_type": type(error).__name__,
+                "error": str(error),
+            },
+            flush=True,
+        )
+
+        raise
 
 
 @mcp.tool()
