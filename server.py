@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 import requests
-from fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 
 # ---------------------------------------------------------
