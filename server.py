@@ -854,15 +854,15 @@ def search_radar_videos(
         reverse=True,
     )
 
-return {
-    "items": results,
-    "quota_exceeded": False,
-    "_quota": {
-        "search_calls": search_calls_used,
-        "other_units": other_units_used,
-    },
-}
-
+    return {
+        "items": results,
+        "quota_exceeded": False,
+        "_quota": {
+            "search_calls": search_calls_used,
+            "other_units": other_units_used,
+        },
+    }
+ 
 # ---------------------------------------------------------
 # Run MCP server
 # ---------------------------------------------------------
