@@ -590,6 +590,9 @@ def search_radar_videos(
 
     results: list[dict[str, Any]] = []
 
+    search_calls_used = 0
+    other_units_used = 0
+    
     from datetime import datetime, timezone
 
     now = datetime.now(
@@ -630,6 +633,25 @@ def search_radar_videos(
                     order="date",
                 )
 
+                quota_data = data.get(
+                    "_quota",
+                    {},
+                )
+
+                search_calls_used += int(
+                    quota_data.get(
+                        "search_calls",
+                        0,
+                    )
+                )
+
+                other_units_used += int(
+                    quota_data.get(
+                        "other_units",
+                        0,
+                    )
+                )
+            
             except YouTubeQuotaError:
 
                 logger.warning(
