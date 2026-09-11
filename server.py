@@ -259,8 +259,11 @@ def search_videos(
     if not video_ids:
         return {
             "items": items,
+            "_quota": {
+                "search_calls": 1,
+                "other_units": 0,
+            },
         }
-
     stats_result = get_video_stats(video_ids)
 
     stats_by_id = {
@@ -281,6 +284,10 @@ def search_videos(
 
     return {
         "items": enriched,
+        "_quota": {
+            "search_calls": 1,
+            "other_units": 1,
+        },
     }
 
 
