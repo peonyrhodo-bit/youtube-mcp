@@ -659,14 +659,17 @@ def search_radar_videos(
                     "YouTube quota was reached"
                 )
 
-                return {
-                    "items": results,
-                    "quota_exceeded": True,
-                    "message": (
-                        "YouTube quota or "
-                        "rate limit reached"
-                    ),
-                }
+            return {
+    "items": results,
+    "quota_exceeded": True,
+    "_quota": {
+        "search_calls": search_calls_used,
+        "other_units": other_units_used,
+    },
+    "message": (
+        "YouTube quota or rate limit reached"
+    ),
+}
 
             except Exception as exc:
 
@@ -851,10 +854,14 @@ def search_radar_videos(
         reverse=True,
     )
 
-    return {
-        "items": results,
-        "quota_exceeded": False,
-    }
+return {
+    "items": results,
+    "quota_exceeded": False,
+    "_quota": {
+        "search_calls": search_calls_used,
+        "other_units": other_units_used,
+    },
+}
 
 # ---------------------------------------------------------
 # Run MCP server
