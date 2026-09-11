@@ -555,6 +555,7 @@ RADAR_EXCLUDED_CATEGORY_IDS = {
 @mcp.tool()
 def search_radar_videos(
     languages: list[str] | None = None,
+    queries: list[str] | None = None,
     max_results_per_query: int = 10,
 ) -> dict[str, Any]:
     """
@@ -579,13 +580,25 @@ def search_radar_videos(
 
     now = datetime.now(timezone.utc)
 
-    for language in languages:
-        config = LANGUAGE_CONFIG.get(language)
+    search_budget = 8
+search_count = 0
 
-        if not config:
-            continue
+for language in languages:
+    config = LANGUAGE_CONFIG.get(language)
+    if not config:
+        continue
 
-        for query in config["queries"]:
+    if queries:
+        language_queries = queries
+    else:
+        language_queries = config["queries"]
+
+    for query in language_queries:
+
+        if search_count >= search_budget:
+            break
+
+        search_count += 1
             try:
                 data = search_videos(
                     query=query,
