@@ -367,7 +367,7 @@ LANGUAGE_CONFIG = {
         "queries": [
             "тренды",
             "искусственный интеллект технологии",
-            "фильмы истории",
+            "новые технологии",
             "образование интересное",
         ],
     },
@@ -377,7 +377,7 @@ LANGUAGE_CONFIG = {
         "queries": [
             "trends",
             "artificial intelligence technology",
-            "movies stories",
+            "new technology",
             "interesting education",
         ],
     },
@@ -385,24 +385,153 @@ LANGUAGE_CONFIG = {
         "region_code": "IN",
         "relevance_language": "hi",
         "queries": [
-            "trends",
-            "artificial intelligence technology",
-            "movies stories",
-            "education",
+            "ट्रेंड",
+            "कृत्रिम बुद्धिमत्ता तकनीक",
+            "नई तकनीक",
+            "शिक्षा रोचक",
         ],
     },
     "zh": {
-        "region_code": "US",
+        "region_code": "TW",
         "relevance_language": "zh",
         "queries": [
             "趋势",
             "人工智能 科技",
-            "电影 故事",
-            "教育",
+            "新技术",
+            "有趣 教育",
+        ],
+    },
+    "ja": {
+        "region_code": "JP",
+        "relevance_language": "ja",
+        "queries": [
+            "トレンド",
+            "人工知能 テクノロジー",
+            "最新技術",
+            "面白い 教育",
+        ],
+    },
+    "ko": {
+        "region_code": "KR",
+        "relevance_language": "ko",
+        "queries": [
+            "트렌드",
+            "인공지능 기술",
+            "최신 기술",
+            "흥미로운 교육",
+        ],
+    },
+    "es": {
+        "region_code": "ES",
+        "relevance_language": "es",
+        "queries": [
+            "tendencias",
+            "inteligencia artificial tecnología",
+            "nuevas tecnologías",
+            "educación interesante",
+        ],
+    },
+    "pt": {
+        "region_code": "BR",
+        "relevance_language": "pt",
+        "queries": [
+            "tendências",
+            "inteligência artificial tecnologia",
+            "novas tecnologias",
+            "educação interessante",
+        ],
+    },
+    "ar": {
+        "region_code": "SA",
+        "relevance_language": "ar",
+        "queries": [
+            "اتجاهات",
+            "الذكاء الاصطناعي والتكنولوجيا",
+            "تقنيات جديدة",
+            "تعليم ممتع",
+        ],
+    },
+    "de": {
+        "region_code": "DE",
+        "relevance_language": "de",
+        "queries": [
+            "Trends",
+            "künstliche Intelligenz Technologie",
+            "neue Technologien",
+            "interessante Bildung",
+        ],
+    },
+    "fr": {
+        "region_code": "FR",
+        "relevance_language": "fr",
+        "queries": [
+            "tendances",
+            "intelligence artificielle technologie",
+            "nouvelles technologies",
+            "éducation intéressante",
+        ],
+    },
+    "it": {
+        "region_code": "IT",
+        "relevance_language": "it",
+        "queries": [
+            "tendenze",
+            "intelligenza artificiale tecnologia",
+            "nuove tecnologie",
+            "educazione interessante",
+        ],
+    },
+    "tr": {
+        "region_code": "TR",
+        "relevance_language": "tr",
+        "queries": [
+            "trendler",
+            "yapay zeka teknoloji",
+            "yeni teknolojiler",
+            "ilginç eğitim",
+        ],
+    },
+    "id": {
+        "region_code": "ID",
+        "relevance_language": "id",
+        "queries": [
+            "tren",
+            "kecerdasan buatan teknologi",
+            "teknologi terbaru",
+            "pendidikan menarik",
+        ],
+    },
+    "vi": {
+        "region_code": "VN",
+        "relevance_language": "vi",
+        "queries": [
+            "xu hướng",
+            "trí tuệ nhân tạo công nghệ",
+            "công nghệ mới",
+            "giáo dục thú vị",
+        ],
+    },
+    "th": {
+        "region_code": "TH",
+        "relevance_language": "th",
+        "queries": [
+            "เทรนด์",
+            "ปัญญาประดิษฐ์ เทคโนโลยี",
+            "เทคโนโลยีใหม่",
+            "การศึกษาน่าสนใจ",
+        ],
+    },
+    "pl": {
+        "region_code": "PL",
+        "relevance_language": "pl",
+        "queries": [
+            "trendy",
+            "sztuczna inteligencja technologia",
+            "nowe technologie",
+            "ciekawa edukacja",
         ],
     },
 }
-
 
 RADAR_EXCLUDED_WORDS = {
     "politics",
