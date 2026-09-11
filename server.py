@@ -558,12 +558,16 @@ def search_radar_videos(
     queries: list[str] | None = None,
     max_results_per_query: int = 10,
 ) -> dict[str, Any]:
-    """
-    Search a compact set of YouTube queries for emerging videos.
 
-    Important:
-    The radar deliberately uses a small number of search.list calls
-    because search.list consumes YouTube quota.
+    """
+    Search YouTube for emerging videos.
+
+    The Director provides research languages and, when available,
+    its own search queries.
+
+    There is no artificial search-count limit here.
+    Real YouTube quota protection remains handled by the
+    underlying YouTube API / quota mechanism.
     """
 
     if languages is None:
@@ -571,79 +575,120 @@ def search_radar_videos(
 
     max_results_per_query = max(
         1,
-        min(max_results_per_query, 10),
+        min(
+            max_results_per_query,
+            10,
+        ),
     )
 
     results: list[dict[str, Any]] = []
 
     from datetime import datetime, timezone
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(
+        timezone.utc
+    )
 
-    search_budget = 8
-search_count = 0
+    for language in languages:
 
-for language in languages:
-    config = LANGUAGE_CONFIG.get(language)
-    if not config:
-        continue
+        config = LANGUAGE_CONFIG.get(
+            language
+        )
 
-    if queries:
-        language_queries = queries
-    else:
-        language_queries = config["queries"]
+        if not config:
+            continue
 
-    for query in language_queries:
+        if queries:
+            language_queries = queries
+        else:
+            language_queries = config[
+                "queries"
+            ]
 
-        if search_count >= search_budget:
-            break
+        for query in language_queries:
 
-        search_count += 1
             try:
+
                 data = search_videos(
                     query=query,
-                    max_results=max_results_per_query,
-                    region_code=config["region_code"],
-                    relevance_language=config["relevance_language"],
+                    max_results=(
+                        max_results_per_query
+                    ),
+                    region_code=config[
+                        "region_code"
+                    ],
+                    relevance_language=config[
+                        "relevance_language"
+                    ],
                     order="date",
                 )
 
             except YouTubeQuotaError:
+
                 logger.warning(
-                    "Radar stopped because YouTube quota was reached"
+                    "Radar stopped because "
+                    "YouTube quota was reached"
                 )
 
                 return {
                     "items": results,
                     "quota_exceeded": True,
-                    "message": "YouTube quota or rate limit reached",
+                    "message": (
+                        "YouTube quota or "
+                        "rate limit reached"
+                    ),
                 }
 
             except Exception as exc:
+
                 logger.warning(
                     "Radar query failed: %s (%s)",
                     query,
                     type(exc).__name__,
                 )
+
                 continue
 
-            for item in data.get("items", []):
-                snippet = item.get("snippet", {})
-                statistics = item.get("statistics", {})
+            for item in data.get(
+                "items",
+                [],
+            ):
 
-                category_id = str(
-                    snippet.get("categoryId", "")
+                snippet = item.get(
+                    "snippet",
+                    {},
                 )
 
-                if category_id in RADAR_EXCLUDED_CATEGORY_IDS:
+                statistics = item.get(
+                    "statistics",
+                    {},
+                )
+
+                category_id = str(
+                    snippet.get(
+                        "categoryId",
+                        "",
+                    )
+                )
+
+                if (
+                    category_id
+                    in RADAR_EXCLUDED_CATEGORY_IDS
+                ):
                     continue
 
                 title = str(
-                    snippet.get("title", "")
+                    snippet.get(
+                        "title",
+                        "",
+                    )
                 )
 
                 description = str(
-                    snippet.get("description", "")
+                    snippet.get(
+                        "description",
+                        "",
+                    )
                 )
 
                 searchable_text = (
@@ -663,84 +708,113 @@ for language in languages:
                 age_hours = None
 
                 if published_at:
+
                     try:
-                        published = datetime.fromisoformat(
-                            published_at.replace(
-                                "Z",
-                                "+00:00",
+
+                        published = (
+                            datetime.fromisoformat(
+                                published_at.replace(
+                                    "Z",
+                                    "+00:00",
+                                )
                             )
                         )
 
                         age_hours = max(
                             (
-                                now - published
+                                now
+                                - published
                             ).total_seconds()
                             / 3600,
                             0.01,
                         )
+
                     except Exception:
+
                         age_hours = None
 
                 try:
+
                     views = int(
                         statistics.get(
                             "viewCount",
                             0,
                         )
                     )
+
                 except Exception:
+
                     views = 0
 
                 try:
+
                     likes = int(
                         statistics.get(
                             "likeCount",
                             0,
                         )
                     )
+
                 except Exception:
+
                     likes = 0
 
                 try:
+
                     comments = int(
                         statistics.get(
                             "commentCount",
                             0,
                         )
                     )
+
                 except Exception:
+
                     comments = 0
 
                 views_per_hour = None
 
                 if age_hours:
+
                     views_per_hour = (
-                        views / age_hours
+                        views
+                        / age_hours
                     )
 
                 engagement = 0.0
 
                 if views > 0:
+
                     engagement = (
-                        likes + comments
+                        likes
+                        + comments
                     ) / views
 
-                enriched = dict(item)
+                enriched = dict(
+                    item
+                )
 
                 enriched["_radar"] = {
                     "language": language,
                     "query": query,
                     "age_hours": age_hours,
                     "views": views,
-                    "views_per_hour": views_per_hour,
+                    "views_per_hour": (
+                        views_per_hour
+                    ),
                     "engagement": engagement,
                 }
 
-                results.append(enriched)
+                results.append(
+                    enriched
+                )
 
     results.sort(
         key=lambda item: (
-            item.get("_radar", {}).get(
+            item.get(
+                "_radar",
+                {},
+            ).get(
                 "views_per_hour"
             )
             or 0
@@ -752,7 +826,6 @@ for language in languages:
         "items": results,
         "quota_exceeded": False,
     }
-
 
 # ---------------------------------------------------------
 # Run MCP server
