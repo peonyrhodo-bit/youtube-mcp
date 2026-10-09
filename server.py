@@ -157,7 +157,7 @@ def get_video_stats(video_ids: list[str]) -> dict[str, Any]:
             "id": ",".join(video_ids),
         },
     )
-    result["_quota"] = {"search_calls": 0, "quota_units": 1, "videos_list_units": 1}
+    result["_quota"] = {"search_calls": 0, "other_units": 1, "videos_list_calls": 1}
     return result
 
 
@@ -181,7 +181,7 @@ def get_channel_stats(channel_id: str) -> dict[str, Any]:
             "id": channel_id,
         },
     )
-    result["_quota"] = {"search_calls": 0, "quota_units": 1, "channels_list_units": 1}
+    result["_quota"] = {"search_calls": 0, "other_units": 1, "channels_list_calls": 1}
     return result
 
 
@@ -209,7 +209,7 @@ def search_channels(
             "maxResults": max_results,
         },
     )
-    result["_quota"] = {"search_calls": 1, "quota_units": 100, "search_list_units": 100}
+    result["_quota"] = {"search_calls": 1, "other_units": 0, "search_list_calls": 1}
     return result
 
 
@@ -267,9 +267,9 @@ def search_videos(
             "items": items,
             "_quota": {
                 "search_calls": 1,
-                "quota_units": 100,
-                "search_list_units": 100,
-                "videos_list_units": 0,
+                "other_units": 0,
+                "search_list_calls": 1,
+                "videos_list_calls": 0,
             },
         }
     stats_result = get_video_stats(video_ids)
@@ -294,9 +294,9 @@ def search_videos(
         "items": enriched,
         "_quota": {
             "search_calls": 1,
-            "quota_units": 101,
-            "search_list_units": 100,
-            "videos_list_units": 1,
+            "other_units": 1,
+            "search_list_calls": 1,
+            "videos_list_calls": 1,
         },
     }
 
@@ -369,7 +369,7 @@ def search_trending_videos(
         filtered.append(item)
 
     result["items"] = filtered
-    result["_quota"] = {"search_calls": 0, "quota_units": 1, "videos_list_units": 1}
+    result["_quota"] = {"search_calls": 0, "other_units": 1, "videos_list_calls": 1}
 
     return result
 
