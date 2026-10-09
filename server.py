@@ -150,13 +150,15 @@ def get_video_stats(video_ids: list[str]) -> dict[str, Any]:
 
     video_ids = list(dict.fromkeys(video_ids))[:50]
 
-    return youtube_get(
+    result = youtube_get(
         "videos",
         {
             "part": "snippet,statistics,contentDetails",
             "id": ",".join(video_ids),
         },
     )
+    result["_quota"] = {"search_calls": 0, "quota_units": 1, "videos_list_units": 1}
+    return result
 
 
 # ---------------------------------------------------------
@@ -172,13 +174,15 @@ def get_channel_stats(channel_id: str) -> dict[str, Any]:
     if not channel_id:
         raise ValueError("channel_id is required")
 
-    return youtube_get(
+    result = youtube_get(
         "channels",
         {
             "part": "snippet,statistics,contentDetails",
             "id": channel_id,
         },
     )
+    result["_quota"] = {"search_calls": 0, "quota_units": 1, "channels_list_units": 1}
+    return result
 
 
 # ---------------------------------------------------------
@@ -196,7 +200,7 @@ def search_channels(
 
     max_results = max(1, min(max_results, 50))
 
-    return youtube_get(
+    result = youtube_get(
         "search",
         {
             "part": "snippet",
@@ -205,6 +209,8 @@ def search_channels(
             "maxResults": max_results,
         },
     )
+    result["_quota"] = {"search_calls": 1, "quota_units": 100, "search_list_units": 100}
+    return result
 
 
 # ---------------------------------------------------------
@@ -261,7 +267,9 @@ def search_videos(
             "items": items,
             "_quota": {
                 "search_calls": 1,
-                "other_units": 0,
+                "quota_units": 100,
+                "search_list_units": 100,
+                "videos_list_units": 0,
             },
         }
     stats_result = get_video_stats(video_ids)
@@ -286,7 +294,9 @@ def search_videos(
         "items": enriched,
         "_quota": {
             "search_calls": 1,
-            "other_units": 1,
+            "quota_units": 101,
+            "search_list_units": 100,
+            "videos_list_units": 1,
         },
     }
 
@@ -359,6 +369,7 @@ def search_trending_videos(
         filtered.append(item)
 
     result["items"] = filtered
+    result["_quota"] = {"search_calls": 0, "quota_units": 1, "videos_list_units": 1}
 
     return result
 
