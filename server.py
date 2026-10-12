@@ -4,6 +4,7 @@ from typing import Any
 
 import requests
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import JSONResponse
 
 
 # ---------------------------------------------------------
@@ -40,6 +41,16 @@ mcp = FastMCP(
     host="0.0.0.0",
     port=PORT,
 )
+
+
+# ---------------------------------------------------------
+# Simple HTTP endpoint for uptime checks
+# ---------------------------------------------------------
+
+@mcp.custom_route("/", methods=["GET"])
+async def root_health_check(request):
+    return JSONResponse({"status": "ok"})
+
 
 
 # ---------------------------------------------------------
