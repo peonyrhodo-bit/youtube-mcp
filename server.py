@@ -1,6 +1,11 @@
 import os
 import logging
+import json
+import sqlite3
+from datetime import datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -30,6 +35,146 @@ logger = logging.getLogger("youtube-mcp")
 
 class YouTubeQuotaError(Exception):
     """Raised when YouTube API quota/rate limit is reached."""
+
+
+class YouTubeQuotaGuard:
+    """Fail-closed preflight at the only HTTP gateway to YouTube Data API."""
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.search_limit = max(0, int(os.getenv("YOUTUBE_SEARCH_DAILY_LIMIT", "100")))
+        self.other_limit = max(0, int(os.getenv("YOUTUBE_OTHER_DAILY_QUOTA_UNITS", "10000")))
+        self.timezone = ZoneInfo("America/Los_Angeles")
+        self._ensure_schema()
+
+    def _connect(self):
+        if self.db_path != ":memory:":
+            Path(self.db_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        return conn
+
+    def _ensure_schema(self):
+        conn = self._connect()
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS youtube_quota_usage (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    search_calls INTEGER NOT NULL DEFAULT 0,
+                    other_units INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS youtube_quota_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    bucket TEXT NOT NULL,
+                    units INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT,
+                    remaining_json TEXT NOT NULL DEFAULT '{}',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    finished_at TEXT
+                )
+            """)
+        finally:
+            conn.close()
+
+    def _period_start(self, now: datetime | None = None) -> datetime:
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        local = current.astimezone(self.timezone)
+        midnight = datetime.combine(local.date(), time.min, tzinfo=self.timezone)
+        return midnight.astimezone(timezone.utc)
+
+    def authorize(self, endpoint: str, params: dict[str, Any] | None = None) -> int:
+        bucket = "search" if endpoint == "search" else "other"
+        units = 1
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            start = self._period_start().isoformat()
+            row = conn.execute("""
+                SELECT COALESCE(SUM(search_calls), 0) AS search_calls,
+                       COALESCE(SUM(other_units), 0) AS other_units
+                FROM youtube_quota_usage WHERE created_at >= ?
+            """, (start,)).fetchone()
+            used_search = int(row["search_calls"] or 0)
+            used_other = int(row["other_units"] or 0)
+            search_remaining = max(self.search_limit - used_search, 0)
+            other_remaining = max(self.other_limit - used_other, 0)
+            remaining = {
+                "search_remaining": search_remaining,
+                "other_remaining": other_remaining,
+                "search_limit": self.search_limit,
+                "other_limit": self.other_limit,
+            }
+            available = search_remaining if bucket == "search" else other_remaining
+            method = "search.list" if bucket == "search" else f"{endpoint}.list"
+            if available < units:
+                conn.execute("""
+                    INSERT INTO youtube_quota_events
+                    (created_at, operation, method, bucket, units, status, reason, remaining_json, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, 'blocked', 'budget_exhausted', ?, ?)
+                """, (
+                    datetime.now(timezone.utc).isoformat(), "youtube_get", method, bucket, units,
+                    json.dumps(remaining), json.dumps({"endpoint": endpoint, "params": params or {}}, default=str),
+                ))
+                conn.commit()
+                raise YouTubeQuotaError(
+                    f"YouTube {bucket} budget exhausted before {method}; remaining={available}"
+                )
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute("""
+                INSERT INTO youtube_quota_usage
+                (created_at, operation, search_calls, other_units, metadata_json)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                now, "youtube_get", units if bucket == "search" else 0,
+                units if bucket == "other" else 0,
+                json.dumps({"method": method, "endpoint": endpoint}, default=str),
+            ))
+            remaining["search_remaining"] = max(search_remaining - (units if bucket == "search" else 0), 0)
+            remaining["other_remaining"] = max(other_remaining - (units if bucket == "other" else 0), 0)
+            event_id = conn.execute("""
+                INSERT INTO youtube_quota_events
+                (created_at, operation, method, bucket, units, status, remaining_json, metadata_json)
+                VALUES (?, ?, ?, ?, ?, 'attempted', ?, ?)
+            """, (
+                now, "youtube_get", method, bucket, units, json.dumps(remaining),
+                json.dumps({"endpoint": endpoint}, default=str),
+            )).lastrowid
+            conn.commit()
+            return int(event_id)
+        except YouTubeQuotaError:
+            raise
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def finish(self, event_id: int, status: str, reason: str | None = None):
+        conn = self._connect()
+        try:
+            conn.execute("""
+                UPDATE youtube_quota_events SET status=?, reason=?, finished_at=?
+                WHERE id=?
+            """, (status, reason, datetime.now(timezone.utc).isoformat(), event_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+QUOTA_DB_PATH = os.getenv("YOUTUBE_QUOTA_DB_PATH", "/tmp/youtube_quota.sqlite3")
+quota_guard = YouTubeQuotaGuard(QUOTA_DB_PATH)
 
 
 # ---------------------------------------------------------
@@ -66,21 +211,16 @@ def youtube_get(
 
     safe_params = dict(params or {})
     safe_params["key"] = YOUTUBE_API_KEY
-
     url = f"{YOUTUBE_API_BASE}/{endpoint}"
 
+    # This is the central enforcement point: every outbound YouTube HTTP request
+    # must obtain a quota authorization before the network is touched.
+    event_id = quota_guard.authorize(endpoint, params)
     try:
-        response = requests.get(
-            url,
-            params=safe_params,
-            timeout=30,
-        )
-
+        response = requests.get(url, params=safe_params, timeout=30)
     except requests.RequestException as exc:
-        logger.error(
-            "YouTube request failed: %s",
-            type(exc).__name__,
-        )
+        quota_guard.finish(event_id, "error", type(exc).__name__)
+        logger.error("YouTube request failed: %s", type(exc).__name__)
         raise RuntimeError("YouTube API request failed") from exc
 
     if response.status_code in (403, 429):
@@ -88,62 +228,38 @@ def youtube_get(
             data = response.json()
         except Exception:
             data = {}
-
-        reasons = []
-
-        for error in data.get("error", {}).get("errors", []):
-            reason = error.get("reason")
-            if reason:
-                reasons.append(reason)
-
-        message = data.get("error", {}).get("message", "")
-
+        reasons = [
+            item.get("reason")
+            for item in data.get("error", {}).get("errors", [])
+            if item.get("reason")
+        ]
         quota_reasons = {
-            "quotaExceeded",
-            "dailyLimitExceeded",
-            "rateLimitExceeded",
+            "quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded",
             "userRateLimitExceeded",
         }
-
-        if response.status_code == 429 or any(
-            reason in quota_reasons for reason in reasons
-        ):
-            logger.warning(
-                "YouTube quota/rate limit reached for endpoint=%s",
-                endpoint,
-            )
-            raise YouTubeQuotaError(
-                "YouTube API quota or rate limit reached"
-            )
-
-        logger.error(
-            "YouTube API returned HTTP %s for endpoint=%s",
-            response.status_code,
-            endpoint,
-        )
-
-        raise RuntimeError(
-            "YouTube API authorization/request error"
-        )
+        if response.status_code == 429 or any(reason in quota_reasons for reason in reasons):
+            quota_guard.finish(event_id, "error", "youtube_quota_or_rate_limit")
+            logger.warning("YouTube quota/rate limit reached for endpoint=%s", endpoint)
+            raise YouTubeQuotaError("YouTube API quota or rate limit reached")
+        quota_guard.finish(event_id, "error", f"http_{response.status_code}")
+        logger.error("YouTube API returned HTTP %s for endpoint=%s", response.status_code, endpoint)
+        raise RuntimeError("YouTube API authorization/request error")
 
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
-        logger.error(
-            "YouTube API returned HTTP %s for endpoint=%s",
-            response.status_code,
-            endpoint,
-        )
-        raise RuntimeError(
-            "YouTube API request failed"
-        ) from exc
+        quota_guard.finish(event_id, "error", f"http_{response.status_code}")
+        logger.error("YouTube API returned HTTP %s for endpoint=%s", response.status_code, endpoint)
+        raise RuntimeError("YouTube API request failed") from exc
 
     try:
-        return response.json()
+        payload = response.json()
     except ValueError as exc:
-        raise RuntimeError(
-            "YouTube API returned invalid JSON"
-        ) from exc
+        quota_guard.finish(event_id, "error", "invalid_json")
+        raise RuntimeError("YouTube API returned invalid JSON") from exc
+
+    quota_guard.finish(event_id, "succeeded")
+    return payload
 
 
 # ---------------------------------------------------------
