@@ -262,7 +262,21 @@ def search_videos(
     # invocation; durable daily totals are aggregated by the Director.
     search_list_calls = 1
     videos_list_calls = 0
-    search_result = youtube_get("search", params)
+    try:
+        search_result = youtube_get("search", params)
+    except Exception as exc:
+        logger.warning("YouTube API call accounting: endpoint=search.list attempted=1 succeeded=0 error=%s", type(exc).__name__)
+        return {
+            "items": [],
+            "error": "search.list request failed",
+            "_quota": {
+                "search_calls": search_list_calls,
+                "search_list_calls": search_list_calls,
+                "videos_list_calls": videos_list_calls,
+                "other_units": 0,
+                "accounting": "observed_method_calls",
+            },
+        }
     items = search_result.get("items", [])
 
     video_ids = list(dict.fromkeys(
@@ -284,7 +298,23 @@ def search_videos(
         }
 
     videos_list_calls += 1
-    stats_result = get_video_stats(video_ids)
+    try:
+        stats_result = get_video_stats(video_ids)
+    except Exception as exc:
+        # Search results are still useful if enrichment fails. Report the
+        # attempted videos.list call so the caller can account for it.
+        logger.warning("YouTube API call accounting: endpoint=videos.list attempted=1 succeeded=0 error=%s", type(exc).__name__)
+        return {
+            "items": items,
+            "_quota": {
+                "search_calls": search_list_calls,
+                "search_list_calls": search_list_calls,
+                "videos_list_calls": videos_list_calls,
+                "other_units": videos_list_calls,
+                "accounting": "observed_method_calls",
+                "videos_list_error": type(exc).__name__,
+            },
+        }
     stats_by_id = {
         item.get("id"): item
         for item in stats_result.get("items", [])
