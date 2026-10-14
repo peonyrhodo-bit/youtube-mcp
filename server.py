@@ -118,6 +118,15 @@ class YouTubeQuotaGuard:
             }
             available = search_remaining if bucket == "search" else other_remaining
             method = "search.list" if bucket == "search" else f"{endpoint}.list"
+            conn.execute("""
+                INSERT INTO youtube_quota_events
+                (created_at, operation, method, bucket, units, status, remaining_json, metadata_json)
+                VALUES (?, ?, ?, ?, ?, 'planned', ?, ?)
+            """, (
+                datetime.now(timezone.utc).isoformat(), "youtube_get", method, bucket, units,
+                json.dumps(remaining),
+                json.dumps({"endpoint": endpoint, "params": params or {}}, default=str),
+            ))
             if available < units:
                 conn.execute("""
                     INSERT INTO youtube_quota_events
