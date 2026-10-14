@@ -233,6 +233,9 @@ def search_videos(
 ) -> dict[str, Any]:
     """
     Search YouTube videos and enrich results with statistics.
+
+    _quota reports observed API method calls, not estimated quota units.
+    search.list and videos.list are separate quota buckets in the Director.
     """
 
     max_results = max(1, min(max_results, 50))
@@ -254,29 +257,64 @@ def search_videos(
     if published_after:
         params["publishedAfter"] = published_after
 
-    search_result = youtube_get(
-        "search",
-        params,
-    )
-
+    # Count attempts before making the request: failed/invalid requests can
+    # still consume quota. The response can only report calls made in this
+    # invocation; durable daily totals are aggregated by the Director.
+    search_list_calls = 1
+    videos_list_calls = 0
+    try:
+        search_result = youtube_get("search", params)
+    except Exception as exc:
+        logger.warning("YouTube API call accounting: endpoint=search.list attempted=1 succeeded=0 error=%s", type(exc).__name__)
+        return {
+            "items": [],
+            "error": "search.list request failed",
+            "_quota": {
+                "search_calls": search_list_calls,
+                "search_list_calls": search_list_calls,
+                "videos_list_calls": videos_list_calls,
+                "other_units": 0,
+                "accounting": "observed_method_calls",
+            },
+        }
     items = search_result.get("items", [])
 
-    video_ids = [
+    video_ids = list(dict.fromkeys(
         item.get("id", {}).get("videoId")
         for item in items
         if item.get("id", {}).get("videoId")
-    ]
+    ))
 
     if not video_ids:
         return {
             "items": items,
             "_quota": {
-                "search_calls": 1,
+                "search_calls": search_list_calls,
+                "search_list_calls": search_list_calls,
+                "videos_list_calls": videos_list_calls,
                 "other_units": 0,
+                "accounting": "observed_method_calls",
             },
         }
-    stats_result = get_video_stats(video_ids)
 
+    videos_list_calls += 1
+    try:
+        stats_result = get_video_stats(video_ids)
+    except Exception as exc:
+        # Search results are still useful if enrichment fails. Report the
+        # attempted videos.list call so the caller can account for it.
+        logger.warning("YouTube API call accounting: endpoint=videos.list attempted=1 succeeded=0 error=%s", type(exc).__name__)
+        return {
+            "items": items,
+            "_quota": {
+                "search_calls": search_list_calls,
+                "search_list_calls": search_list_calls,
+                "videos_list_calls": videos_list_calls,
+                "other_units": videos_list_calls,
+                "accounting": "observed_method_calls",
+                "videos_list_error": type(exc).__name__,
+            },
+        }
     stats_by_id = {
         item.get("id"): item
         for item in stats_result.get("items", [])
@@ -284,10 +322,8 @@ def search_videos(
     }
 
     enriched = []
-
     for item in items:
         video_id = item.get("id", {}).get("videoId")
-
         if video_id and video_id in stats_by_id:
             enriched.append(stats_by_id[video_id])
         else:
@@ -296,8 +332,11 @@ def search_videos(
     return {
         "items": enriched,
         "_quota": {
-            "search_calls": 1,
-            "other_units": 1,
+            "search_calls": search_list_calls,
+            "search_list_calls": search_list_calls,
+            "videos_list_calls": videos_list_calls,
+            "other_units": videos_list_calls,
+            "accounting": "observed_method_calls",
         },
     }
 
