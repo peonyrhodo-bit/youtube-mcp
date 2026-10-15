@@ -38,148 +38,63 @@ class YouTubeQuotaError(Exception):
 
 
 class YouTubeQuotaGuard:
-    """Fail-closed preflight at the only HTTP gateway to YouTube Data API."""
+    """Fail-closed client for Director's single authoritative quota ledger."""
 
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self.search_limit = max(0, int(os.getenv("YOUTUBE_SEARCH_DAILY_LIMIT", "100")))
-        self.other_limit = max(0, int(os.getenv("YOUTUBE_OTHER_DAILY_QUOTA_UNITS", "10000")))
-        self.timezone = ZoneInfo("America/Los_Angeles")
-        self._ensure_schema()
+    def __init__(self, _db_path: str | None = None):
+        # No local ledger: independent SQLite files across services cannot
+        # provide a single atomic quota budget.
+        self.auth_url = os.getenv("YOUTUBE_QUOTA_AUTH_URL", "").rstrip("/")
+        self.shared_secret = os.getenv("YOUTUBE_QUOTA_SHARED_SECRET", "")
 
-    def _connect(self):
-        if self.db_path != ":memory:":
-            Path(self.db_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 30000")
-        return conn
-
-    def _ensure_schema(self):
-        conn = self._connect()
+    def _post(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.auth_url or not self.shared_secret:
+            raise YouTubeQuotaError(
+                "Central YouTube quota authority is not configured; request blocked"
+            )
         try:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS youtube_quota_usage (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL,
-                    operation TEXT NOT NULL,
-                    search_calls INTEGER NOT NULL DEFAULT 0,
-                    other_units INTEGER NOT NULL DEFAULT 0,
-                    metadata_json TEXT NOT NULL DEFAULT '{}'
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS youtube_quota_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    created_at TEXT NOT NULL,
-                    operation TEXT NOT NULL,
-                    method TEXT NOT NULL,
-                    bucket TEXT NOT NULL,
-                    units INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    reason TEXT,
-                    remaining_json TEXT NOT NULL DEFAULT '{}',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    finished_at TEXT
-                )
-            """)
-        finally:
-            conn.close()
-
-    def _period_start(self, now: datetime | None = None) -> datetime:
-        current = now or datetime.now(timezone.utc)
-        if current.tzinfo is None:
-            current = current.replace(tzinfo=timezone.utc)
-        local = current.astimezone(self.timezone)
-        midnight = datetime.combine(local.date(), time.min, tzinfo=self.timezone)
-        return midnight.astimezone(timezone.utc)
+            response = requests.post(
+                f"{self.auth_url}/internal/youtube-quota/{action}",
+                json=payload,
+                headers={"X-Quota-Secret": self.shared_secret},
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            logger.error("Central quota authority unavailable (%s); blocking YouTube request", type(exc).__name__)
+            raise YouTubeQuotaError("Central YouTube quota authority unavailable; request blocked") from exc
+        if response.status_code == 429:
+            raise YouTubeQuotaError("Central YouTube quota budget exhausted; request blocked")
+        if response.status_code >= 400:
+            logger.error("Central quota authority rejected %s with HTTP %s", action, response.status_code)
+            raise YouTubeQuotaError("Central YouTube quota authorization failed; request blocked")
+        try:
+            result = response.json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise YouTubeQuotaError("Central quota authority returned invalid response; request blocked") from exc
+        if not isinstance(result, dict):
+            raise YouTubeQuotaError("Central quota authority returned invalid response; request blocked")
+        return result
 
     def authorize(self, endpoint: str, params: dict[str, Any] | None = None) -> int:
         bucket = "search" if endpoint == "search" else "other"
-        units = 1
-        conn = self._connect()
+        method = "search.list" if bucket == "search" else f"{endpoint}.list"
+        result = self._post("authorize", {
+            "bucket": bucket,
+            "operation": "youtube_get",
+            "method": method,
+            "units": 1,
+            "metadata": {"endpoint": endpoint, "params": params or {}},
+        })
         try:
-            conn.execute("BEGIN IMMEDIATE")
-            start = self._period_start().isoformat()
-            row = conn.execute("""
-                SELECT COALESCE(SUM(search_calls), 0) AS search_calls,
-                       COALESCE(SUM(other_units), 0) AS other_units
-                FROM youtube_quota_usage WHERE created_at >= ?
-            """, (start,)).fetchone()
-            used_search = int(row["search_calls"] or 0)
-            used_other = int(row["other_units"] or 0)
-            search_remaining = max(self.search_limit - used_search, 0)
-            other_remaining = max(self.other_limit - used_other, 0)
-            remaining = {
-                "search_remaining": search_remaining,
-                "other_remaining": other_remaining,
-                "search_limit": self.search_limit,
-                "other_limit": self.other_limit,
-            }
-            available = search_remaining if bucket == "search" else other_remaining
-            method = "search.list" if bucket == "search" else f"{endpoint}.list"
-            conn.execute("""
-                INSERT INTO youtube_quota_events
-                (created_at, operation, method, bucket, units, status, remaining_json, metadata_json)
-                VALUES (?, ?, ?, ?, ?, 'planned', ?, ?)
-            """, (
-                datetime.now(timezone.utc).isoformat(), "youtube_get", method, bucket, units,
-                json.dumps(remaining),
-                json.dumps({"endpoint": endpoint, "params": params or {}}, default=str),
-            ))
-            if available < units:
-                conn.execute("""
-                    INSERT INTO youtube_quota_events
-                    (created_at, operation, method, bucket, units, status, reason, remaining_json, metadata_json)
-                    VALUES (?, ?, ?, ?, ?, 'blocked', 'budget_exhausted', ?, ?)
-                """, (
-                    datetime.now(timezone.utc).isoformat(), "youtube_get", method, bucket, units,
-                    json.dumps(remaining), json.dumps({"endpoint": endpoint, "params": params or {}}, default=str),
-                ))
-                conn.commit()
-                raise YouTubeQuotaError(
-                    f"YouTube {bucket} budget exhausted before {method}; remaining={available}"
-                )
-            now = datetime.now(timezone.utc).isoformat()
-            conn.execute("""
-                INSERT INTO youtube_quota_usage
-                (created_at, operation, search_calls, other_units, metadata_json)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                now, "youtube_get", units if bucket == "search" else 0,
-                units if bucket == "other" else 0,
-                json.dumps({"method": method, "endpoint": endpoint}, default=str),
-            ))
-            remaining["search_remaining"] = max(search_remaining - (units if bucket == "search" else 0), 0)
-            remaining["other_remaining"] = max(other_remaining - (units if bucket == "other" else 0), 0)
-            event_id = conn.execute("""
-                INSERT INTO youtube_quota_events
-                (created_at, operation, method, bucket, units, status, remaining_json, metadata_json)
-                VALUES (?, ?, ?, ?, ?, 'attempted', ?, ?)
-            """, (
-                now, "youtube_get", method, bucket, units, json.dumps(remaining),
-                json.dumps({"endpoint": endpoint}, default=str),
-            )).lastrowid
-            conn.commit()
-            return int(event_id)
-        except YouTubeQuotaError:
-            raise
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+            return int(result["event_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise YouTubeQuotaError("Central quota authority omitted event ID; request blocked") from exc
 
     def finish(self, event_id: int, status: str, reason: str | None = None):
-        conn = self._connect()
-        try:
-            conn.execute("""
-                UPDATE youtube_quota_events SET status=?, reason=?, finished_at=?
-                WHERE id=?
-            """, (status, reason, datetime.now(timezone.utc).isoformat(), event_id))
-            conn.commit()
-        finally:
-            conn.close()
+        self._post("finish", {
+            "event_id": int(event_id),
+            "status": "succeeded" if status in {"succeeded", "success"} else "error",
+            "reason": reason,
+        })
 
 
 QUOTA_DB_PATH = os.getenv("YOUTUBE_QUOTA_DB_PATH", "/tmp/youtube_quota.sqlite3")
