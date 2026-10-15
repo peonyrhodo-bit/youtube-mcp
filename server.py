@@ -1,6 +1,11 @@
 import os
 import logging
+import json
+import sqlite3
+from datetime import datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 from mcp.server.fastmcp import FastMCP
@@ -30,6 +35,69 @@ logger = logging.getLogger("youtube-mcp")
 
 class YouTubeQuotaError(Exception):
     """Raised when YouTube API quota/rate limit is reached."""
+
+
+class YouTubeQuotaGuard:
+    """Fail-closed client for Director's single authoritative quota ledger."""
+
+    def __init__(self, _db_path: str | None = None):
+        # No local ledger: independent SQLite files across services cannot
+        # provide a single atomic quota budget.
+        self.auth_url = os.getenv("YOUTUBE_QUOTA_AUTH_URL", "").rstrip("/")
+        self.shared_secret = os.getenv("YOUTUBE_QUOTA_SHARED_SECRET", "")
+
+    def _post(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.auth_url or not self.shared_secret:
+            raise YouTubeQuotaError(
+                "Central YouTube quota authority is not configured; request blocked"
+            )
+        try:
+            response = requests.post(
+                f"{self.auth_url}/internal/youtube-quota/{action}",
+                json=payload,
+                headers={"X-Quota-Secret": self.shared_secret},
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            logger.error("Central quota authority unavailable (%s); blocking YouTube request", type(exc).__name__)
+            raise YouTubeQuotaError("Central YouTube quota authority unavailable; request blocked") from exc
+        if response.status_code == 429:
+            raise YouTubeQuotaError("Central YouTube quota budget exhausted; request blocked")
+        if response.status_code >= 400:
+            logger.error("Central quota authority rejected %s with HTTP %s", action, response.status_code)
+            raise YouTubeQuotaError("Central YouTube quota authorization failed; request blocked")
+        try:
+            result = response.json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise YouTubeQuotaError("Central quota authority returned invalid response; request blocked") from exc
+        if not isinstance(result, dict):
+            raise YouTubeQuotaError("Central quota authority returned invalid response; request blocked")
+        return result
+
+    def authorize(self, endpoint: str, params: dict[str, Any] | None = None) -> int:
+        bucket = "search" if endpoint == "search" else "other"
+        method = "search.list" if bucket == "search" else f"{endpoint}.list"
+        result = self._post("authorize", {
+            "bucket": bucket,
+            "operation": "youtube_get",
+            "method": method,
+            "units": 1,
+            "metadata": {"endpoint": endpoint, "params": params or {}},
+        })
+        try:
+            return int(result["event_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise YouTubeQuotaError("Central quota authority omitted event ID; request blocked") from exc
+
+    def finish(self, event_id: int, status: str, reason: str | None = None):
+        self._post("finish", {
+            "event_id": int(event_id),
+            "status": "succeeded" if status in {"succeeded", "success"} else "error",
+            "reason": reason,
+        })
+
+
+quota_guard = YouTubeQuotaGuard()
 
 
 # ---------------------------------------------------------
@@ -66,21 +134,16 @@ def youtube_get(
 
     safe_params = dict(params or {})
     safe_params["key"] = YOUTUBE_API_KEY
-
     url = f"{YOUTUBE_API_BASE}/{endpoint}"
 
+    # This is the central enforcement point: every outbound YouTube HTTP request
+    # must obtain a quota authorization before the network is touched.
+    event_id = quota_guard.authorize(endpoint, params)
     try:
-        response = requests.get(
-            url,
-            params=safe_params,
-            timeout=30,
-        )
-
+        response = requests.get(url, params=safe_params, timeout=30)
     except requests.RequestException as exc:
-        logger.error(
-            "YouTube request failed: %s",
-            type(exc).__name__,
-        )
+        quota_guard.finish(event_id, "error", type(exc).__name__)
+        logger.error("YouTube request failed: %s", type(exc).__name__)
         raise RuntimeError("YouTube API request failed") from exc
 
     if response.status_code in (403, 429):
@@ -88,62 +151,38 @@ def youtube_get(
             data = response.json()
         except Exception:
             data = {}
-
-        reasons = []
-
-        for error in data.get("error", {}).get("errors", []):
-            reason = error.get("reason")
-            if reason:
-                reasons.append(reason)
-
-        message = data.get("error", {}).get("message", "")
-
+        reasons = [
+            item.get("reason")
+            for item in data.get("error", {}).get("errors", [])
+            if item.get("reason")
+        ]
         quota_reasons = {
-            "quotaExceeded",
-            "dailyLimitExceeded",
-            "rateLimitExceeded",
+            "quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded",
             "userRateLimitExceeded",
         }
-
-        if response.status_code == 429 or any(
-            reason in quota_reasons for reason in reasons
-        ):
-            logger.warning(
-                "YouTube quota/rate limit reached for endpoint=%s",
-                endpoint,
-            )
-            raise YouTubeQuotaError(
-                "YouTube API quota or rate limit reached"
-            )
-
-        logger.error(
-            "YouTube API returned HTTP %s for endpoint=%s",
-            response.status_code,
-            endpoint,
-        )
-
-        raise RuntimeError(
-            "YouTube API authorization/request error"
-        )
+        if response.status_code == 429 or any(reason in quota_reasons for reason in reasons):
+            quota_guard.finish(event_id, "error", "youtube_quota_or_rate_limit")
+            logger.warning("YouTube quota/rate limit reached for endpoint=%s", endpoint)
+            raise YouTubeQuotaError("YouTube API quota or rate limit reached")
+        quota_guard.finish(event_id, "error", f"http_{response.status_code}")
+        logger.error("YouTube API returned HTTP %s for endpoint=%s", response.status_code, endpoint)
+        raise RuntimeError("YouTube API authorization/request error")
 
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
-        logger.error(
-            "YouTube API returned HTTP %s for endpoint=%s",
-            response.status_code,
-            endpoint,
-        )
-        raise RuntimeError(
-            "YouTube API request failed"
-        ) from exc
+        quota_guard.finish(event_id, "error", f"http_{response.status_code}")
+        logger.error("YouTube API returned HTTP %s for endpoint=%s", response.status_code, endpoint)
+        raise RuntimeError("YouTube API request failed") from exc
 
     try:
-        return response.json()
+        payload = response.json()
     except ValueError as exc:
-        raise RuntimeError(
-            "YouTube API returned invalid JSON"
-        ) from exc
+        quota_guard.finish(event_id, "error", "invalid_json")
+        raise RuntimeError("YouTube API returned invalid JSON") from exc
+
+    quota_guard.finish(event_id, "succeeded")
+    return payload
 
 
 # ---------------------------------------------------------
@@ -264,6 +303,8 @@ def search_videos(
     videos_list_calls = 0
     try:
         search_result = youtube_get("search", params)
+    except YouTubeQuotaError:
+        raise
     except Exception as exc:
         logger.warning("YouTube API call accounting: endpoint=search.list attempted=1 succeeded=0 error=%s", type(exc).__name__)
         return {
