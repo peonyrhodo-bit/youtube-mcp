@@ -97,8 +97,7 @@ class YouTubeQuotaGuard:
         })
 
 
-QUOTA_DB_PATH = os.getenv("YOUTUBE_QUOTA_DB_PATH", "/tmp/youtube_quota.sqlite3")
-quota_guard = YouTubeQuotaGuard(QUOTA_DB_PATH)
+quota_guard = YouTubeQuotaGuard()
 
 
 # ---------------------------------------------------------
