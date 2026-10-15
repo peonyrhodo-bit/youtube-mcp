@@ -304,6 +304,8 @@ def search_videos(
     videos_list_calls = 0
     try:
         search_result = youtube_get("search", params)
+    except YouTubeQuotaError:
+        raise
     except Exception as exc:
         logger.warning("YouTube API call accounting: endpoint=search.list attempted=1 succeeded=0 error=%s", type(exc).__name__)
         return {
