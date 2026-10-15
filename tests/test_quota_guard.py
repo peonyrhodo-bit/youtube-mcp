@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
-from server import YouTubeQuotaError, YouTubeQuotaGuard
+from server import YouTubeQuotaError, YouTubeQuotaGuard, search_videos
 
 
 class YouTubeQuotaGuardTests(unittest.TestCase):
@@ -56,6 +56,13 @@ class YouTubeQuotaGuardTests(unittest.TestCase):
         post.side_effect = requests.Timeout("simulated")
         with self.assertRaises(YouTubeQuotaError):
             self.guard.authorize("search", {"q": "blocked"})
+
+    @patch("server.youtube_get")
+    def test_search_quota_exhaustion_is_not_reported_as_empty_results(self, youtube_get):
+        youtube_get.side_effect = YouTubeQuotaError("budget exhausted")
+        with self.assertRaises(YouTubeQuotaError):
+            search_videos("test query")
+        youtube_get.assert_called_once()
 
     @patch("server.requests.post")
     def test_exhausted_central_budget_is_rejected(self, post):
