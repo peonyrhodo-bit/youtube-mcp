@@ -129,6 +129,7 @@ async def root_health_check(request):
 def youtube_get(
     endpoint: str,
     params: dict[str, Any] | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     if not YOUTUBE_API_KEY:
         raise RuntimeError("YOUTUBE_API_KEY is not configured")
