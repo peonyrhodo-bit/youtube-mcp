@@ -17,7 +17,6 @@ from starlette.responses import JSONResponse
 # ---------------------------------------------------------
 
 PORT = int(os.getenv("PORT", "8000"))
-# Correlation logging change under review.
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
