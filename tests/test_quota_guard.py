@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
-from server import YouTubeQuotaError, YouTubeQuotaGuard, search_videos
+from server import YouTubeQuotaError, YouTubeQuotaGuard, get_video_stats, search_videos
 
 
 class YouTubeQuotaGuardTests(unittest.TestCase):
@@ -69,6 +69,12 @@ class YouTubeQuotaGuardTests(unittest.TestCase):
         post.return_value = Mock(status_code=429, json=lambda: {"detail": "budget_exhausted"})
         with self.assertRaises(YouTubeQuotaError):
             self.guard.authorize("search", {"q": "second"})
+
+    @patch("server.youtube_get")
+    def test_video_stats_forwards_correlation_id(self, youtube_get):
+        youtube_get.return_value = {"items": []}
+        get_video_stats(["video-id"], correlation_id="trace-123")
+        self.assertEqual(youtube_get.call_args.kwargs["correlation_id"], "trace-123")
 
 
 if __name__ == "__main__":
