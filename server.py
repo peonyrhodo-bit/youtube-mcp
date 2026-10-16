@@ -208,6 +208,7 @@ def get_video_stats(video_ids: list[str], correlation_id: str | None = None) -> 
             "part": "snippet,statistics,contentDetails",
             "id": ",".join(video_ids),
         },
+        correlation_id=correlation_id,
     )
 
 
@@ -271,6 +272,7 @@ def search_videos(
     relevance_language: str | None = None,
     published_after: str | None = None,
     order: str = "relevance",
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Search YouTube videos and enrich results with statistics.
@@ -304,7 +306,7 @@ def search_videos(
     search_list_calls = 1
     videos_list_calls = 0
     try:
-        search_result = youtube_get("search", params)
+        search_result = youtube_get("search", params, correlation_id=correlation_id)
     except YouTubeQuotaError:
         raise
     except Exception as exc:
@@ -342,7 +344,7 @@ def search_videos(
 
     videos_list_calls += 1
     try:
-        stats_result = get_video_stats(video_ids)
+        stats_result = get_video_stats(video_ids, correlation_id=correlation_id)
     except Exception as exc:
         # Search results are still useful if enrichment fails. Report the
         # attempted videos.list call so the caller can account for it.
