@@ -218,7 +218,7 @@ def get_video_stats(video_ids: list[str], correlation_id: str | None = None) -> 
 # ---------------------------------------------------------
 
 @mcp.tool()
-def get_channel_stats(channel_id: str) -> dict[str, Any]:
+def get_channel_stats(channel_id: str, correlation_id: str | None = None) -> dict[str, Any]:
     """
     Get statistics for one YouTube channel.
     """
@@ -232,6 +232,7 @@ def get_channel_stats(channel_id: str) -> dict[str, Any]:
             "part": "snippet,statistics,contentDetails",
             "id": channel_id,
         },
+        correlation_id=correlation_id,
     )
 
 
