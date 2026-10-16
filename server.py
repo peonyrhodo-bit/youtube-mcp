@@ -191,7 +191,7 @@ def youtube_get(
 # ---------------------------------------------------------
 
 @mcp.tool()
-def get_video_stats(video_ids: list[str]) -> dict[str, Any]:
+def get_video_stats(video_ids: list[str], correlation_id: str | None = None) -> dict[str, Any]:
     """
     Get statistics for up to 50 YouTube videos.
     """
