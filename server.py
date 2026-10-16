@@ -128,6 +128,7 @@ async def root_health_check(request):
 def youtube_get(
     endpoint: str,
     params: dict[str, Any] | None = None,
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     if not YOUTUBE_API_KEY:
         raise RuntimeError("YOUTUBE_API_KEY is not configured")
@@ -135,6 +136,7 @@ def youtube_get(
     safe_params = dict(params or {})
     safe_params["key"] = YOUTUBE_API_KEY
     url = f"{YOUTUBE_API_BASE}/{endpoint}"
+    logger.info("YouTube API request started endpoint=%s correlation_id=%s", endpoint, correlation_id or "-")
 
     # This is the central enforcement point: every outbound YouTube HTTP request
     # must obtain a quota authorization before the network is touched.
@@ -143,7 +145,7 @@ def youtube_get(
         response = requests.get(url, params=safe_params, timeout=30)
     except requests.RequestException as exc:
         quota_guard.finish(event_id, "error", type(exc).__name__)
-        logger.error("YouTube request failed: %s", type(exc).__name__)
+        logger.error("YouTube request failed: error=%s correlation_id=%s", type(exc).__name__, correlation_id or "-")
         raise RuntimeError("YouTube API request failed") from exc
 
     if response.status_code in (403, 429):
@@ -182,6 +184,7 @@ def youtube_get(
         raise RuntimeError("YouTube API returned invalid JSON") from exc
 
     quota_guard.finish(event_id, "succeeded")
+    logger.info("YouTube API request finished endpoint=%s status=succeeded correlation_id=%s", endpoint, correlation_id or "-")
     return payload
 
 
@@ -190,7 +193,7 @@ def youtube_get(
 # ---------------------------------------------------------
 
 @mcp.tool()
-def get_video_stats(video_ids: list[str]) -> dict[str, Any]:
+def get_video_stats(video_ids: list[str], correlation_id: str | None = None) -> dict[str, Any]:
     """
     Get statistics for up to 50 YouTube videos.
     """
@@ -206,6 +209,7 @@ def get_video_stats(video_ids: list[str]) -> dict[str, Any]:
             "part": "snippet,statistics,contentDetails",
             "id": ",".join(video_ids),
         },
+        correlation_id=correlation_id,
     )
 
 
@@ -269,6 +273,7 @@ def search_videos(
     relevance_language: str | None = None,
     published_after: str | None = None,
     order: str = "relevance",
+    correlation_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Search YouTube videos and enrich results with statistics.
@@ -302,11 +307,11 @@ def search_videos(
     search_list_calls = 1
     videos_list_calls = 0
     try:
-        search_result = youtube_get("search", params)
+        search_result = youtube_get("search", params, correlation_id=correlation_id)
     except YouTubeQuotaError:
         raise
     except Exception as exc:
-        logger.warning("YouTube API call accounting: endpoint=search.list attempted=1 succeeded=0 error=%s", type(exc).__name__)
+        logger.warning("YouTube API call accounting: endpoint=search.list attempted=1 succeeded=0 error=%s correlation_id=%s", type(exc).__name__, correlation_id or "-")
         return {
             "items": [],
             "error": "search.list request failed",
@@ -340,11 +345,11 @@ def search_videos(
 
     videos_list_calls += 1
     try:
-        stats_result = get_video_stats(video_ids)
+        stats_result = get_video_stats(video_ids, correlation_id=correlation_id)
     except Exception as exc:
         # Search results are still useful if enrichment fails. Report the
         # attempted videos.list call so the caller can account for it.
-        logger.warning("YouTube API call accounting: endpoint=videos.list attempted=1 succeeded=0 error=%s", type(exc).__name__)
+        logger.warning("YouTube API call accounting: endpoint=videos.list attempted=1 succeeded=0 error=%s correlation_id=%s", type(exc).__name__, correlation_id or "-")
         return {
             "items": items,
             "_quota": {
