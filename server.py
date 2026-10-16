@@ -137,6 +137,7 @@ def youtube_get(
     safe_params = dict(params or {})
     safe_params["key"] = YOUTUBE_API_KEY
     url = f"{YOUTUBE_API_BASE}/{endpoint}"
+    logger.info("YouTube API request started endpoint=%s correlation_id=%s", endpoint, correlation_id or "-")
 
     # This is the central enforcement point: every outbound YouTube HTTP request
     # must obtain a quota authorization before the network is touched.
@@ -145,7 +146,7 @@ def youtube_get(
         response = requests.get(url, params=safe_params, timeout=30)
     except requests.RequestException as exc:
         quota_guard.finish(event_id, "error", type(exc).__name__)
-        logger.error("YouTube request failed: %s", type(exc).__name__)
+        logger.error("YouTube request failed: error=%s correlation_id=%s", type(exc).__name__, correlation_id or "-")
         raise RuntimeError("YouTube API request failed") from exc
 
     if response.status_code in (403, 429):
@@ -184,6 +185,7 @@ def youtube_get(
         raise RuntimeError("YouTube API returned invalid JSON") from exc
 
     quota_guard.finish(event_id, "succeeded")
+    logger.info("YouTube API request finished endpoint=%s status=succeeded correlation_id=%s", endpoint, correlation_id or "-")
     return payload
 
 
@@ -310,7 +312,7 @@ def search_videos(
     except YouTubeQuotaError:
         raise
     except Exception as exc:
-        logger.warning("YouTube API call accounting: endpoint=search.list attempted=1 succeeded=0 error=%s", type(exc).__name__)
+        logger.warning("YouTube API call accounting: endpoint=search.list attempted=1 succeeded=0 error=%s correlation_id=%s", type(exc).__name__, correlation_id or "-")
         return {
             "items": [],
             "error": "search.list request failed",
@@ -348,7 +350,7 @@ def search_videos(
     except Exception as exc:
         # Search results are still useful if enrichment fails. Report the
         # attempted videos.list call so the caller can account for it.
-        logger.warning("YouTube API call accounting: endpoint=videos.list attempted=1 succeeded=0 error=%s", type(exc).__name__)
+        logger.warning("YouTube API call accounting: endpoint=videos.list attempted=1 succeeded=0 error=%s correlation_id=%s", type(exc).__name__, correlation_id or "-")
         return {
             "items": items,
             "_quota": {
