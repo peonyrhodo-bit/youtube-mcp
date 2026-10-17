@@ -117,7 +117,26 @@ mcp = FastMCP(
 
 @mcp.custom_route("/", methods=["GET"])
 async def root_health_check(request):
-    return JSONResponse({"status": "ok"})
+    return JSONResponse({"status": "ok", "service": "youtube-mcp"})
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    """Expose non-secret configuration readiness without spending YouTube quota."""
+    api_key_configured = bool(YOUTUBE_API_KEY)
+    quota_authority_configured = bool(
+        quota_guard.auth_url and quota_guard.shared_secret
+    )
+    ready = api_key_configured and quota_authority_configured
+    return JSONResponse({
+        "service": "youtube-mcp",
+        "status": "ok" if ready else "degraded",
+        "checks": {
+            "youtube_api_key_configured": api_key_configured,
+            "central_quota_authority_configured": quota_authority_configured,
+        },
+        "youtube_api_live_probe": "not_performed_to_avoid_quota_consumption",
+    }, status_code=200)
 
 
 
