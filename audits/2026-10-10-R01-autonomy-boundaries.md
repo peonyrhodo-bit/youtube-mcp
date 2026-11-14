@@ -2,7 +2,7 @@
 
 - **Дата:** 2026-10-10
 - **Общий статус:** **Обнаружен дефект; проверено частично**
-- **Объём:** Р01.1–Р01.3, четыре репозитория: `site-insight-engine`, `ai-youtube-system`, `youtube-mcp`, `youtube-office-watchdog`.
+- **Объём:** Р01.1–Р01.3, три репозитория: `site-insight-engine`, `ai-youtube-system`, `youtube-mcp`.
 - **Важно:** это не подтверждение готовности системы. Проверка кода выполнена; автоматические тесты и проверка работающей среды не завершены. По правилам аудита пункт нельзя считать пройденным без этих уровней и доказательств.
 
 ## Краткий результат
@@ -22,7 +22,7 @@
 3. Обработчик `_autonomy_act` описывает, что внешний исполнитель производства ещё не подключён, и возвращает `status: awaiting_executor`.
 4. В `youtube-mcp/server.py` зарегистрированы только инструменты чтения/поиска: `get_video_stats`, `get_channel_stats`, `search_channels`, `search_videos`, `search_trending_videos`, `search_radar_videos`. Проверенные вызовы YouTube API используют GET. Маршрутов публикации/загрузки видео, управления каналом или покупки в проверенных entrypoint-ах не найдено.
 5. `ai-youtube-system/server.py` выступает промежуточным API для health/status, запуска исследования, истории, чата и диагностики; в проверенном файле нет маршрутов публикации/покупки.
-6. Workflow watchdog только делает HTTP-запросы для проверки доступности трёх Render-сервисов; действий с контентом канала в workflow не обнаружено.
+6. В рамках этой исторической проверки был рассмотрен внешний механизм HTTP-проверок доступности трёх Render-сервисов. Текущая настройка владельцем описана как отдельный Render Cron Job с ежечасными обращениями ко всем трём сервисам; актуальная конфигурация на момент новой проверки должна быть подтверждена в Render.
 
 ### Найденный вопрос безопасности
 
@@ -70,7 +70,7 @@
 - [youtube-mcp/server.py](https://github.com/peonyrhodo-bit/youtube-mcp/blob/main/server.py#L142-L295) — инструменты чтения и поиск видео.
 - [youtube-mcp/server.py](https://github.com/peonyrhodo-bit/youtube-mcp/blob/main/server.py#L319-L361) и [#L543-L553](https://github.com/peonyrhodo-bit/youtube-mcp/blob/main/server.py#L543-L553) — частичные фильтры отдельных путей.
 - [youtube-mcp/server.py](https://github.com/peonyrhodo-bit/youtube-mcp/blob/main/server.py#L700-L735) — фильтрация в radar-пути.
-- [youtube-office-watchdog workflow](https://github.com/peonyrhodo-bit/youtube-office-watchdog/blob/main/.github/workflows/keep-render-awake.yml) — HTTP-проверки доступности сервисов.
+- Историческое описание внешних HTTP-проверок Render-сервисов; не использовать как подтверждение текущей конфигурации. Проверить отдельный Render Cron Job в Render Dashboard.
 
 ### Автоматические тесты
 
