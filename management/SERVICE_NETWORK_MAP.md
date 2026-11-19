@@ -67,3 +67,14 @@ Source verified against `ai-youtube-system/main`:
 - No runtime environment-value getter is exposed by the connected Render integration. The existing Render logs inspected did not demonstrate an orchestrator → Director proxy request; lack of evidence is not proof of a fault.
 
 **Next non-mutating acceptance check:** owner-authorized read-only `GET https://ai-youtube-system.onrender.com/status` and inspect **only** the `engine.status` and hostname (do not publish tokens or private diagnostic payloads). Because free-tier wake-up checks were deferred by the owner, do **not** force a wake-up just to complete this checkbox. Until evidence is available, №006 stays open.
+
+## Incident update: Director HTTP 503 after wake-up (2026-11-19)
+
+Owner reports new `503` on `https://site-insight-engine.onrender.com/` after waking all three services. Read-only Render `get_service`, `list_events` and `list_logs` show:
+
+- Director service is configured on **free 512 MiB** instance; not administratively suspended, maintenance disabled.
+- Repeated `server_failed` events with explicit `oomKilled.memoryLimit=512Mi`, including **17:22:21**, **17:24:09**, **17:27:37**, **17:29:52 UTC**, alternating with `server_available` events; most recent observed availability **17:31:06 UTC**. Therefore `503` is consistent with recurrent crashes/restarts; no proof that availability is stable.
+- Application log shows **17:30:35** instance restarted and **17:31:02** startup completed. It also logs `Autonomous wakeup worker started: poll=5s interval=3600s`. This is a candidate source of resource pressure, **not proven root cause**.
+- A separate application stack trace at 17:29:27 ends with `MemoryReadError: Memory context read partial: runs`; this is a distinct observed application error, not proof of OOM cause.
+
+**Operational caution:** Do not run `/director/run`, redeploy, change environment, or raise plan without owner approval. A safe `GET /status` from the orchestrator may fail while Director is cycling; №006 remains blocked until stable evidence. Track the repeated OOM as an incident and as input to №056. No production changes made by audit.
