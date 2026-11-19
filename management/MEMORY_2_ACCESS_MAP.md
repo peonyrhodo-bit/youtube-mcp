@@ -77,3 +77,15 @@
 - `Director.apply_feedback` (около 2069–2140) сохраняет обратную связь через `memory_service.apply_recommendation_feedback` и ограничения через `save_constraint`. Эти данные — **защищённые** (R27/R30), не кандидаты на TTL.
 
 **Приоритет следующей трассировки:** определить реализацию `data_service.get_project_state`, сборку приложения/создание сервисов, размер `research_execution` и `context.metadata` перед/после повторного `inspect`, затем MCP/Orchestrator. Сохранять различие между проверенным call site и гипотезой об OOM.
+
+## Проверка DataAdapter.get_project_state — уточнение гипотезы о повторной загрузке
+
+**Подтверждённый источник:** `peonyrhodo-bit/site-insight-engine/server.py`, main, строки 1074–1415. Это конкретная реализация `data_service.get_project_state` из `Director.inspect`.
+
+- `DataAdapter.get_project_state` начинает с компактной структуры result (1074–1107). При наличии registry и смене `_loaded_project_id` выбирает `storage.load_youtube_analysis_data` (1114–1129), иначе legacy `load_youtube_data`. Полученный набор переносится в `youtube_registry`, предварительно очищенный (1132–1164); это попытка избежать одновременного удержания двух полных копий.
+- `load_opportunity_data` и `load_research_data` также вызываются **только когда `_loaded_project_id != project_id`** (1166–1245). После успешного прохода `_loaded_project_id = project_id`. Поэтому предыдущая гипотеза «каждый повторный inspect снова загружает всю Supabase историю» **не подтверждается кодом и для обычного того же проекта неверна**. Исключения: смена проекта, сброс маркера/новый adapter, ошибки до установки маркера и другие не исследованные пути.
+- После загрузки `get_project_state` **каждый вызов** (если registry существует) выполняет `videos = youtube_registry.videos()` и создаёт `observations`, `previous_observations`, `trend_current_observations` (1256–1415). Каждый video преобразуется через `video.to_dict()` (1268–1276); для видео с предыдущим снимком создаётся `dict(observation)` (1373), а текущая запись переиспользуется в `trend_current_observations` (1367–1371). Это конкретный путь **повторного построения производных списков/словарей в RAM**, не обязательно повторного DB read.
+- При каждом `Director.inspect` (director/director.py 587–595) `get_project_state` возвращает новый result, а `_merge_context` заменяет списки. Старые списки могут стать доступны для GC, но пик при временном сосуществовании до освобождения памяти и объём сериализованных видео требуют измерений. **Нельзя утверждать OOM без heap/RSS profile**.
+- Возможная оптимизация для M18–M22: компактные observation projections, reuse по версии registry, bounded matched trend cohorts, ленивый evidence drill-down, но только при сохранении полного аналитического результата и семантики обновления после исследования. Нельзя без тестов кэшировать устаревшие наблюдения.
+
+**Обновлённая гипотеза M04:** проверить peak RSS на границах `load_* → registry → observations_built → Director.inspect → analyze → _autonomy_research → inspect`, различая DB fetch и пересборку рабочих структур. Приоритет — доказательство, не преждевременное изменение кода.
