@@ -59,3 +59,14 @@ IDs и поля должны проверяться по реальной схе
 **A.** Offline contract tests + fixture + измерение размера L2. **B.** Малый обратимый code patch под feature flag (L1/L2), без schema change. **C.** Offline parity + нагрузочные тесты и проверка на Render только с отдельным разрешением deploy. **D.** Затем отдельный проект incremental analytics и retention/archive, без автоматической очистки. Точки согласования: (1) byte cap, (2) разрешение code patch, (3) deploy/canary, (4) любые миграции/удаления/внешние расходы. Отдельный аудит quota/M15 не должен блокировать завершение **дизайна памяти**, но ошибки исследовательских вызовов учитываются в автономном режиме.
 
 **Итог:** архитектурный контракт памяти подготовлен; **не реализован и не принят**. 0/40 общих контрольных этапов формально принято.
+
+## 8. Обязательная поправка: output cap != peak RSS (верификация live SHA)
+
+Повторная проверка live `site-insight-engine@09ceb05f`: `memory/memory.py:Memory.get_context` (267–325) **сначала** вызывает `backend.get_context` (289–323), **затем** `_build_memory_context` (325); последний на 339 получает полные `results`, на 399–408 копирует их в `memory_state`. Следовательно, **постфактум-проекция** в Python ограничит размер сериализованного ответа/повторное сохранение, но **не гарантирует снижение peak RSS**, поскольку full `data_json` уже материализован backend. Также в `_build_memory_context` защищённые lists (constraints/recommendations/actions/decisions) передаются как полные dict; общий лимит только results недостаточен.
+
+**Два независимых acceptance gate:**
+
+- **Gate A (anti-amplification):** L2 и work_plan/logs/новые результаты не содержат full historical JSON; BC/BM тесты подтверждают byte cap, immutable L0, статус incomplete и сохранность защищённых ссылок. Это не считается доказательством решения OOM.
+- **Gate B (bounded read/RSS):** отдельный read-model метод backend выбирает только нужные колонки, применяет project scope и детерминированный pagination, **не загружая full data_json** для списка; если требуемый summary существует только внутри data_json, нужно проектировать безопасную ограниченную серверную проекцию/новый индекс после проверки схемы, а не выдавать client-side truncation за bounded read. Full detail читается отдельным точечным запросом по ID. Проверить на Supabase backend и FREE_MODE backend, включая legacy project filtering. Измерить пик RSS, количество/размер HTTP payload, latency на больших synthetic fixtures и реальном read-only профиле. Gate B без результатов измерений не принят.
+
+**Порядок:** сначала Gate A offline (снижение амплификации), затем Gate B (снижение входящего объёма и RSS), и только потом canary. До изменения кода выяснить, какие summary/status/project_id поля реально доступны как отдельные столбцы в `director_results` и других таблицах; не добавлять миграцию вслепую. Ни одна production операция этим документом не разрешена.
