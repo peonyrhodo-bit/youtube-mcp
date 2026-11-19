@@ -144,3 +144,15 @@
 - Это доказывает наличие **крупных durable payload**, но не измеряет transient allocations `serialize`, HTTP JSON buffer или точную причину 57014/OOM. Тот ранее исследованный run **222** имел только ~472 B, поэтому его SQL timeout нельзя приписывать большому payload.
 
 **Безопасный следующий эксперимент:** read-only агрегировать JSON keys/структуру крупнейших строк (без извлечения чувствительного полного содержимого), затем offline fixture для сравнения `asdict + serialize` и компактной projection с профилем peak RSS. Никакого удаления или UPDATE, сохранить историю/восстановимость.
+
+## M03/M04 — локализован источник больших payload в циклах (read-only SQL)
+
+Для `director_runs` IDs 43,45,77,79 выполнены только `SELECT` с `jsonb_each/jsonb_object_keys/pg_column_size`, без извлечения полного JSON. **Важно:** `pg_column_size` для извлечённых JSONB поддеревьев может отражать развёрнутую структуру; сумма вложенных размеров не равна размеру TOAST-сжатой строки.
+
+- IDs 43/45/77/79: `result.state.metadata` ~6.97–6.98 MB в представлении JSONB поддерева, при общей строке ~2.34–2.42 MB. `result.events` всего ~2–6 KB.
+- `state.metadata.work_plan` ~3.48 MB и `state.metadata.project_assessment` ~3.48 MB **каждое**. Для ID 43: `work_plan.basis` **3 483 649 B**, `project_assessment.memory_state` **3 478 618 B**, `work_plan.basis.memory_state` **3 478 618 B**.
+- Главный вклад: `project_assessment.memory_state.recent_results` **3 472 138 B** (ID 43). Этот же `memory_state` вложен в `work_plan.basis`, поэтому **два пути включают крупную историю результатов**. `recent_runs` лишь 4774 B, `recent_events` 1191 B. Это подтверждённая структурная повторяемость больших данных, а не просто гипотеза о JSON.
+- **Потенциальный механизм рекурсивного разрастания:** `recent_results` содержит ранее сохранённые `director_results`, которые могут включать полный сериализованный цикл с предыдущим `memory_state`. Новые `work_plan` и `project_assessment` включают их снова. Требуется отдельная проверка глубины вложения и фактического состава, без полного чтения payload. Не объявлять бесконечную рекурсию доказанной.
+- ID 33 — **другой** manual-run формат: `result` содержит `state_snapshot`, не `result.state.metadata`. Не объединять разные контуры.
+
+**Приоритетная безопасная проектная мера (ещё не реализована):** в `memory_state.recent_results` и других «контекстных» summary использовать ограниченные ссылки/ID, статусы, краткие summaries и хэши, а полные исторические результаты хранить **отдельно, неизменяемо и доступно по ссылке**. Не удалять `director_results` и не нарушать возможность анализа прошлого; ввести версионированную schema/provenance и offline parity tests. Проверить источник `_memory_state_summary` и места включения `project_assessment` в `work_plan.basis`.
