@@ -64,3 +64,11 @@ Read-only live `director/director.py@09ceb05f`:
 - Add companion test: complete, verified empty constraints permits normal research path (subject to existing quota policy); partial protected state must not be treated as complete.
 
 **Boundary of evidence:** This inspection establishes an absent `memory_read` check at the direct `research_service.execute` call site, not proof that a real unauthorized YouTube request was sent or that downstream guards are missing. No calls to research services were made.
+
+## Real research executor verified (2026-11-19)
+
+`server.py:1991–1999` injects `self.research` into Director; `server.py:1716+` constructs `YouTubeResearchExecutor` from `director/research_executor.py`. Live `research_executor.py:674+` `execute(plan,project_id=...)` has a real MCP network path (`streamable_http_client` around 822), with quota preflight around 872–874 and additional quota checks for statistics. Search operations can call MCP and persist results. Its inspected methods do **not** contain a `memory_read` or protected-constraint authorization check; this is a code-level absence in inspected executor, **not** proof of policy breach or outbound calls.
+
+**Precise P0 boundary:** block unsafe external research **before** `Director._autonomy_research` invokes `research_service.execute(plan)` (2400–2403), with a second defense if executor is callable elsewhere; design the second defense around an explicit verified authorization context, not implicit mutable state. Preserve quota preflight as an independent gate. Test a fake executor and a fake MCP client that raise if invoked on incomplete protected-memory status. Read-only analyze/recommend/wait may continue only if they do not require missing approvals; no user-facing publication permitted by this patch.
+
+**Completion condition:** P0 cannot be called complete until both error propagation and a verified authorization guard pass offline tests. Existing source and production remain unchanged. The next step is **explicit approval for non-production code edits**, not another architecture pass.
