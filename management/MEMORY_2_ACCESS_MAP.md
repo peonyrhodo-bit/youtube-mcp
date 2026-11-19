@@ -122,3 +122,14 @@
 - Ограничение `max_research_steps=10` и рост research_sets на 11 не противоречат друг другу автоматически: логи могут охватывать больше одного wake или разный смысл counters. Не выводить количество wake из количества research_sets.
 
 **Следующая проверка:** trace `DirectorCycle.to_dict()` в `server.py` и persistence, `DirectorState.last_result` и `context.metadata`; по логам определить cycle/run IDs и фактические границы wake. M02 остаётся открытым.
+
+## M02 — подтверждённая сериализация и многократное сохранение autonomous cycle
+
+**Источник:** `site-insight-engine/server.py` (main, прочитан 2026-11-19), `director/autonomy.py`.
+
+- `server.serialize` (303–343) **рекурсивно создаёт новые dict/list** для словарей и списков; для объектов с `to_dict` вызывает `serialize(value.to_dict())`, а для dataclass fallback `serialize(asdict(value))`. `DirectorCycle.to_dict` (autonomy.py 118–119) использует `asdict(self)`: это **подтверждённый путь глубокого копирования полного состояния цикла с `state.last_result` и `state.metadata`**, затем рекурсивного копирования сериализатором. Количество и объём копий в пике требуют измерения.
+- `run_director_autonomous_cycle` (server.py 2735–2920): создаёт durable run (2739), вызывает `director.run_autonomous_cycle` (2775), затем `serialized = serialize(result)` (2780). `update_run` (2786–2789) пишет `result: serialized` со статусом partial, `save_result` (2832–2842) пишет тот же результат в отдельную таблицу, финальный `update_run` (2885–2899) снова пишет `result: serialized`. Таким образом **полный payload записывается минимум в два контура и дважды обновляется в runs** при успешном пути. Не утверждать три одновременно живых Python-копии: переменная `serialized` переиспользуется, но JSON/HTTP сериализация может выделять буферы.
+- `server.py` manual run (2495–2597) тоже сериализует `DirectorResult`, добавляет `state_snapshot`, сохраняет в run и result. Не смешивать с автономным путём.
+- При сбое `update_run` до `save_result` durable run остаётся частичным, а сохранение decision/recommendation/result может не выполниться; статус/восстановление — защищённый контракт. В прошлом зафиксирован SQL timeout 57014 на `update_run`, но **не доказано**, что причина — большой JSON конкретной строки.
+
+**Предложение M19–M22 (пока без внедрения):** измерить `len(json.dumps(serialized))`, RSS до/после `serialize(result)`, распределение размеров `DirectorCycle.state.last_result` и `state.metadata`; разработать компактный durable run summary + полную версионированную evidence record/manifest, исключить повторную запись неизменного большого JSON, обеспечить восстановление и идемпотентность. Сначала parity tests по статусам, history/provenance и отказам, затем отдельное разрешение на production. **Не удалять существующие данные.**
