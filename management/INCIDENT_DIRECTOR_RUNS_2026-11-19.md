@@ -112,3 +112,17 @@ Render `list_deploys` для `site-insight-engine`: последний deploy с
 - Наибольшие строки, `pg_column_size` / `octet_length(data_json::text)`: id43 (2,419,593 / 7,471,972), id77 (2,373,980 / 7,327,691), id45 (2,337,021 / 7,214,609), id79 (2,336,837 / 7,213,866), id33 (1,068,232 / 3,304,350). Все они исторические `partial` или NULL status.
 
 Интерпретация: `pg_column_size` характеризует серверное хранение (возможно с компрессией), `octet_length(data_json::text)` — объём текстового представления, ближе к JSON-трафику, но не к реальному RSS Python. Полная история содержит несколько многомегабайтных документов; `select('*')` может приводить к крупному HTTP payload и нескольким копиям в памяти. **Причинность OOM не установлена.** Следующий шаг: измерить размер ответа и peak RSS для конкретных фаз на deployed commit, проверить не загружаются ли крупные документы многократно.
+
+## Измеренная память процесса на Render — важное подтверждение (2026-11-19)
+
+Render app logs `srv-dae6fi61egvs73b4pa90`, интервал 14:30–14:38 UTC, поиск `peak_rss_raw`:
+
+| UTC | Этап | peak_rss_raw | Linux MiB | elapsed |
+|---|---|---:|---:|---:|
+| 14:33:22.426 | `SUPABASE FULL HISTORY ANALYTICS COMPLETE` (1203 videos, 12483 snapshots, 6000 working snapshots) | 418056 | 408.26 | 45.507s |
+| 14:33:25.547 | `SUPABASE OPPORTUNITY DATA LOADED` (500 channels, 16 niches, 262 niche snapshots) | 418056 | 408.26 | 2.827s |
+| 14:33:55.606 | `SUPABASE RESEARCH HISTORY SCANNED` (330 queries, 68 research_sets, 30478 relations) | 458028 | 447.29 | 30.057s |
+
+В точном deployed commit `f95bc0e`, `memory/supabase.py:30–39` функция `_peak_rss_raw` возвращает `resource.getrusage(resource.RUSAGE_SELF).ru_maxrss`. На Linux `ru_maxrss` — peak resident set size в KiB. Последний пик 447.29 MiB = ~87.4% от Render 512 MiB; между замерами рост исторического пика 39.04 MiB. Показатель **накопительный**, не показывает текущий RSS или точную аллокацию этапа; при параллельных задачах нельзя приписывать рост только сканированию research.
+
+Независимое Render event `server_failed` с `oomKilled.memoryLimit=512Mi` в 14:34:09 UTC (после этих замеров) усиливает причинную связь общего превышения памяти с завершением процесса. Но какой именно объект/фаза довели память до лимита между 14:33:55 и 14:34:09 — пока неизвестно. Предпочтительное следующее действие: собрать последующие логи в 14:33:55–14:34:09 и изучить память/структуры research и LLM context, без продакшен-тестов и расходов.
