@@ -70,3 +70,16 @@ At deployed `f95bc0e`, `server.py:1978–2002` `Runtime.get_director(project_id,
 - `server.py:1437–1458` inventory counts can fall back to the current shared registries; if loading fails/returns partial data after a project switch, these may not reflect the requested project. This is a test hypothesis, not a demonstrated leak.
 
 **Separate safety gate before memory implementation:** create isolated local tests with project A and B fixtures, disjoint research IDs/video IDs and mocked storage. Test A→B→A sequential requests, overlapping `asyncio.gather` A/B reads with controlled await interleaving, loader exception/non-dict for B after A, and cached Director A snapshot after B. Assert project IDs, observations, counts, research summaries, relations and persisted full metadata never mix. Verify any new compact method uses the same project-isolation safeguards and does not increase cross-project exposure. If isolation fails, treat as a separate safety defect requiring approval and priority review; do not opportunistically refactor storage during this memory-only task. No production execution or code modifications made.
+
+## Concrete cross-project stale-research branch (code-confirmed, not live-reproduced)
+
+Pinned deployed `site-insight-engine@f95bc0e`:
+
+1. `server.py:1193–1200`: when `project_id != self._loaded_project_id`, research storage is awaited; research registry restoration occurs **only if** `persisted_research` is a dict.
+2. `server.py:1217–1230`: `self.research_manager.clear()` is inside that dict branch. A non-dict research load leaves prior-project research entries intact.
+3. `server.py:1245`: `self._loaded_project_id=project_id` runs regardless of whether the research loader returned a dict.
+4. `server.py:1478–1491`: the returned `research_sets` is serialized from the current `self.research_manager.all()` without a project filter.
+
+**Code-path consequence:** after successful project A load, a project B request with a non-dict research load can return A's research sets under B's project ID; subsequent B calls skip reload because `_loaded_project_id=B`. Whether such a non-dict result occurs in production is unverified. Other loaders can produce similar stale-state hazards; do not assert them without tracing each branch.
+
+**Severity:** potential cross-project data isolation defect; elevate for explicit safety triage. Add a deterministic no-network unit test using mocked storage returning A data then non-dict for B, assert B never receives A IDs or metadata, that the load is flagged incomplete, and that a later B request can retry. Also test exceptions and interleaving. Candidate remediation (not approved): stage each project's complete data in isolated temporary registries and atomically publish only on verified successful load, or keep strictly project-scoped registries and explicit partial-read status; do not simply clear authoritative data on every transient error. Keep this safety fix distinct from research-set memory projection.
