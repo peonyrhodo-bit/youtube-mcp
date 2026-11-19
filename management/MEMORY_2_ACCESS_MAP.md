@@ -156,3 +156,16 @@
 - ID 33 — **другой** manual-run формат: `result` содержит `state_snapshot`, не `result.state.metadata`. Не объединять разные контуры.
 
 **Приоритетная безопасная проектная мера (ещё не реализована):** в `memory_state.recent_results` и других «контекстных» summary использовать ограниченные ссылки/ID, статусы, краткие summaries и хэши, а полные исторические результаты хранить **отдельно, неизменяемо и доступно по ссылке**. Не удалять `director_results` и не нарушать возможность анализа прошлого; ввести версионированную schema/provenance и offline parity tests. Проверить источник `_memory_state_summary` и места включения `project_assessment` в `work_plan.basis`.
+
+## M02 — точная цепочка повторного включения полной истории (code-grounded)
+
+`site-insight-engine/director/director.py`:
+
+1. `inspect` (445–459) вызывает `memory_service.get_context(... limit_results=20, limit_runs=10, ...)`. Источник может вернуть **полные** `director_results.data_json`; ограничение числа строк **не ограничивает их размер**.
+2. `_memory_state_summary` (888–903) берёт `self.context.metadata['memory_state']`, для `recent_results` и прочих категорий делает `rows[-5:]` **без проекции вложенных полей**. Название «Compact» относится лишь к количеству записей. Это конкретная точка переноса полных прежних результатов в новое планирование.
+3. `understand` (929–945) уже включает этот `memory_state` в возвращаемый словарь.
+4. При формировании `work_plan` (2570–2589) `basis.memory_state = self._memory_state_summary()`; затем (2634–2639) **один и тот же объект** `work_plan['basis']` присваивается `state.metadata['project_assessment']`, `self.context.metadata['project_assessment']`, и содержится в `state.metadata['work_plan']`. В памяти это может быть общая ссылка; при `asdict`/JSON сериализации две ветви становятся дублирующими копиями.
+5. `logger.info('DIRECTOR PROJECT ASSESSMENT: %s', json.dumps(work_plan['basis']))` и `logger.info('DIRECTOR WORK PLAN: %s', json.dumps(work_plan))` (2640–2641) **каждый раз сериализуют крупную историю в строку лога**. Это дополнительные временные буферы и объём логов, даже без `server.serialize`.
+6. `server.py` (2780–2789, 2832–2842, 2885–2899) глубоко сериализует цикл и несколько раз сохраняет полный результат. Read-only Supabase SQL подтвердил: `recent_results` ~3.47 MB внутри `project_assessment.memory_state`, ещё раз через `work_plan.basis.memory_state` для run 43.
+
+**Уточнение:** это подтверждённый кодом механизм **вложенной исторической самоссылочной структуры по значениям**, а не доказанная бесконечная рекурсия Python-ссылок. Рекомендованный порядок безопасного патча: (a) bounded lightweight projection для `recent_results` в summary, сохраняя IDs, статус, timestamps, short summary и provenance; (b) убрать дублирующую тяжёлую сериализацию при logging, логировать счётчики и ID; (c) исключить двойное хранение `basis` в сериализуемом state, сохранив доступ к оценке/плану; (d) offline tests с legacy huge fixtures, status/error/restore parity. Ни один пункт не внедрён.
