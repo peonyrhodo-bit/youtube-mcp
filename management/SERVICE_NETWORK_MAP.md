@@ -28,3 +28,11 @@ Render metadata confirms `autoDeploy=yes` and `autoDeployTrigger=commit` for eac
 - [ ] Trace the actual Director research MCP transport and the active scheduler process before declaring the whole topology operational.
 
 **Reason for not closing №006:** Render URLs and source wiring are proven, but effective runtime target configuration and successful inter-service requests are not. No guessed success claim.
+
+## Follow-up: passive Render log verification (2026-11-19)
+
+Read-only `Render.list_logs` for orchestrator `srv-dag8tl2d0e5s73af02q0`, window 2026-11-18T00:00Z–2026-11-19T16:00Z, confirmed application startup at **2026-11-19 00:26:43 UTC**, Uvicorn listening on `0.0.0.0:10000`, and logged GET `/` HTTP 200 on 2026-11-18. This proves that the orchestrator web app was serving requests at that earlier time, **not** that its proxy to Director succeeded or that it is healthy now. No `DIRECTOR_RUN` or inter-service success was established from this sample.
+
+A narrow `type=request` log query for all three services for 2026-11-19 12:00–16:30Z returned no entries; this is **insufficient evidence** to conclude no requests occurred (request/app log types and retention/filtering differ). Do not interpret an empty filtered query as an outage.
+
+Render integration currently exposes service metadata and logs but no read-only environment-variable getter in the available tool catalog; do not use mutation APIs to infer environment settings. Therefore the configured `ENGINE_URL` and `YOUTUBE_MCP_URL` remain unverified. Safe follow-up: examine sanitized application health output or owner-provided hostname-only settings; do not dump secrets.
