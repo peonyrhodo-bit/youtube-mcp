@@ -1,6 +1,6 @@
 # План устранения OOM — Director 3.0
 
-**Создан:** 2026-11-19. **Статус:** активен. **Прогресс:** 3/8. **Текущий шаг:** OOM-04. **Основной план:** 6/60; №006 заблокирован, №008 ожидает возобновления.
+**Создан:** 2026-11-19. **Статус:** активен. **Прогресс:** 4/8. **Текущий шаг:** OOM-05 (ожидает разрешения владельца). **Основной план:** 6/60; №006 заблокирован, №008 ожидает возобновления.
 
 ## Цель и ограничения
 
@@ -18,8 +18,8 @@
 - ✅ **OOM-01** — Собрать точные стеки ошибок, временную шкалу OOM и показания памяти; отделить симптомы от причин.
 - ✅ **OOM-02** — Прочитать путь автономного запуска, retry и загрузки памяти в фактически развёрнутой версии; построить гипотезы.
 - ✅ **OOM-03** — Проверить гипотезы безопасно (логи, статический анализ, существующие тесты); указать, что не подтверждено.
-- 🔄 **OOM-04** — Подготовить минимальное исправление, оценку рисков, критерии отката и конкретную задачу на изменение.
-- ⬜ **OOM-05** — Получить отдельное разрешение владельца на выбранные изменения production/кода/настроек.
+- ✅ **OOM-04** — Подготовить минимальное исправление, оценку рисков, критерии отката и конкретную задачу на изменение.
+- 🔄 **OOM-05** — Получить отдельное разрешение владельца на выбранные изменения production/кода/настроек.
 - ⬜ **OOM-06** — Реализовать согласованное изменение в ограниченном объёме, с тестами и ссылками на коммиты/PR.
 - ⬜ **OOM-07** — Проверить поведение после разрешённого деплоя: доступность, память, перезапуски, ошибки, автономный цикл; без платных API.
 - ⬜ **OOM-08** — Зафиксировать результат, остаточные риски и возврат к №006, затем №008 основного плана.
@@ -47,3 +47,21 @@
 - **2026-11-19 — OOM-03 test reconnaissance (read-only):** GitHub code search for `test_supabase` and `recent_for_project` returned no matches; attempted conventional paths `tests/test_memory_supabase.py`, `tests/test_supabase_memory.py`, `tests/test_memory_context.py`, `tests/test_autonomous_worker.py`, `tests/test_server.py`, `tests/conftest.py`, `pytest.ini`, `pyproject.toml` were not found at deployed SHA. This **does not establish that the repository lacks tests**; full tree/test inventory remains unverified. `requirements.txt` includes FastAPI, Uvicorn, Supabase, psycopg, but no pytest entry. Required regression scenarios: oversized JSON, legacy nested project_id, project isolation, Supabase statement timeout, retry bounds and post-restart behavior. OOM-03 remains active until coverage can be established or explicitly recorded as a test gap; no code/production changes.
 
 - **2026-11-19 — OOM-03 завершён (evidence review, read-only):** `memory/supabase.py:get_context` marks table errors as partial/error; `memory/director_adapter.py:get_context` raises `MemoryReadError` for any non-complete memory context. Therefore the observed `director_runs` statement timeout is sufficient to fail the autonomous cycle and activate bounded retry logic. SQL evidence: 157 rows in `director_runs`, max `data_json` 2,419,593 bytes, avg 68,171 bytes, query plan Seq Scan + Sort for 1000 full rows, existing created_at index. OOM was observed later with memory near 512 MiB, but no allocation profile proves causal linkage. Tests not established from available code search/conventional paths; mark as verification gap. **OOM-04 now active:** design minimal, legacy-compatible fix with safeguards, regression tests, rollback and acceptance criteria. No source/production changes or approvals implied.
+
+## OOM-04 — предлагаемый минимальный patch (НЕ одобрен к внедрению)
+
+**Изменение A — приоритетное:** В `memory/supabase.py:_recent_for_project` для таблицы `director_runs` при заданном `project_id` и `limit` использовать серверный фильтр по выделенной колонке `project_id`, `ORDER BY created_at DESC,id DESC`, ограничение числа возвращаемых записей и без `select=*` для ненужных колонок **только если потребители допускают это**. Не менять формат возвращаемых строк без проверки вызовов. Для legacy строк с `project_id IS NULL` и вложенным `data_json.project_id` предусмотреть отдельную ограниченную совместимую ветку с объединением результатов по дате/id и дедупликацией; не скрывать неполное чтение. Выбор конкретного алгоритма и лимитов — после тестов на фикстурах.
+
+**Изменение B — отдельный, необязательный follow-up:** после подтверждения эффективности A рассмотреть защиту автономного старта/повторных попыток при повторяющемся `MemoryReadError` (cooldown / fail-closed с явным состоянием), без бесконечных retry и без потери запланированных сигналов. Не включать автоматически в минимальный patch без необходимости и отдельного согласования.
+
+**Тесты до деплоя:** 10 требуемых записей из большого набора; 5 документов >1 МБ; изоляция двух проектов; legacy JSON-only project id; правильное глобальное newest-first объединение современных/legacy записей; нулевой/малый лимит; ошибочный ответ Supabase 57014 (не маскировать как пустую историю); ограниченные retry; отсутствие лишних запросов/дублирования; регрессия формы `get_context`. Запустить тесты в изолированной среде; не вызывать production autonomous run.
+
+**Риски:** неправильная фильтрация legacy, изменение порядка, пропуск истории при ограничении страниц, рост запросов при fallback, изменение контрактов адаптера, отсутствие прямого профиля памяти. Поэтому отдельная совместимая ветка и тесты обязательны.
+
+**Rollback:** сохранить исходный SHA Director `f95bc0e4b68a083d8acf3bb09c1c8d4c3e9762dc`, внести изменения через отдельную ветку/PR, проверить тесты, после отдельного разрешения деплоить с возможностью отката к исходному SHA; никаких DB миграций/переключений env в первом патче. Если после деплоя вновь появляются OOM/503, ухудшается чтение истории или нарушается автономный цикл — откатить согласованным способом и зафиксировать инцидент.
+
+**Критерии принятия:** проверенное сохранение истории и изоляции проектов; отсутствуют таймауты `director_runs` и повторяющиеся OOM в согласованном окне наблюдения; RSS остаётся с запасом ниже 512 MiB; автономный цикл и сеть работают штатно; отсутствие платных API/YouTube-запросов при проверке. Один HTTP 200 недостаточен.
+
+**Дополнительное доказательство OOM-04 (read-only SQL):** из 157 `director_runs` у всех `project_id IS NOT NULL`, 5 `data_json` больше 1,000,000 байт; это обосновывает приоритет серверной фильтрации при сохранении legacy-совместимости. Измерение памяти Python и точная причинность OOM остаются непроверенными.
+
+**Approval gate OOM-05:** запросить у владельца явное разрешение отдельно на (1) создание ветки/PR с изменением кода и тестами, (2) деплой в Render. До разрешения не менять код, runtime, env, БД или тариф. OOM-04 завершён как проектирование, не как внедрение.
