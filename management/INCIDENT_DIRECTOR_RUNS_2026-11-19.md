@@ -37,3 +37,12 @@
 3. Render по точному фильтру `Director run heartbeat failed` за 09:00–14:20 UTC дал **одно** событие для `run_id=206` в 09:37:44 UTC. Это доказывает минимум одну ошибку фонового обновления, но не объясняет остальные прерывания: отсутствие такого лога не доказывает успешность heartbeat.
 4. В том же окне Render показал 28 сообщений `Autonomous wakeup failed` (scheduled/retry). Это наблюдаемые отказы пробуждения, не 28 доказанных независимых первопричин.
 5. Отдельно нужно проверить причину блокировки event loop/срок жизни процесса и получить полный traceback heartbeat run 206, затем сопоставить с прекращением `updated_at`. Не считать причиной только сон Render.
+
+## Уточнение первопричины конкретного heartbeat-сбоя (run 206)
+
+По полному фрагменту Render traceback около **2026-11-19 09:37:44 UTC**:
+
+- `server.py:_director_run_heartbeat` строка 2700 вызывает `runtime.memory.update_run`.
+- В цепочке синхронного HTTP/2-клиента `httpcore` возникает **`httpcore.ReadError: [Errno 11] Resource temporarily unavailable`** во время `network_stream.read`; запрос `GET /rest/v1/director_runs?select=data_json&id=eq.206&limit=1` непосредственно перед этим получил HTTP 200, поэтому нужно отдельно проверить следующий HTTP-запрос/операцию и не приписывать ошибку самому успешному GET.
+- В том же коротком окне обнаружен `memory.read_status.MemoryReadError: Memory context read partial: runs` в `memory/director_adapter.py:get_context`, а также ошибка ASGI. Это подтверждает **транспортные ошибки чтения и частичные данные памяти** в момент сбоя, но не доказывает, что все случаи `stale_timeout` имеют тот же источник.
+- Следующая задача: изолировать цепочку `update_run -> backend.update_run`, выяснить повторное чтение `data_json` перед PATCH, проверить поведение при временном `httpx.ReadError`, не ослабляя гарантий сохранения и защиты от дублирования. Не лечить проблему простым игнорированием исключения.
