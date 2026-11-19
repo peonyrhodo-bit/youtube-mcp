@@ -1,6 +1,6 @@
 # План устранения OOM — Director 3.0
 
-**Создан:** 2026-11-19. **Статус:** активен. **Прогресс:** 4/8. **Текущий шаг:** OOM-05 (ожидает разрешения владельца). **Основной план:** 6/60; №006 заблокирован, №008 ожидает возобновления.
+**Создан:** 2026-11-19. **Статус:** активен. **Прогресс:** 5/8. **Текущий шаг:** OOM-06 (код в draft PR, тесты не запущены). **Основной план:** 6/60; №006 заблокирован, №008 ожидает возобновления.
 
 ## Цель и ограничения
 
@@ -19,8 +19,8 @@
 - ✅ **OOM-02** — Прочитать путь автономного запуска, retry и загрузки памяти в фактически развёрнутой версии; построить гипотезы.
 - ✅ **OOM-03** — Проверить гипотезы безопасно (логи, статический анализ, существующие тесты); указать, что не подтверждено.
 - ✅ **OOM-04** — Подготовить минимальное исправление, оценку рисков, критерии отката и конкретную задачу на изменение.
-- 🔄 **OOM-05** — Получить отдельное разрешение владельца на выбранные изменения production/кода/настроек.
-- ⬜ **OOM-06** — Реализовать согласованное изменение в ограниченном объёме, с тестами и ссылками на коммиты/PR.
+- ✅ **OOM-05** — Получить отдельное разрешение владельца на выбранные изменения production/кода/настроек.
+- 🔄 **OOM-06** — Реализовать согласованное изменение в ограниченном объёме, с тестами и ссылками на коммиты/PR.
 - ⬜ **OOM-07** — Проверить поведение после разрешённого деплоя: доступность, память, перезапуски, ошибки, автономный цикл; без платных API.
 - ⬜ **OOM-08** — Зафиксировать результат, остаточные риски и возврат к №006, затем №008 основного плана.
 
@@ -65,3 +65,5 @@
 **Дополнительное доказательство OOM-04 (read-only SQL):** из 157 `director_runs` у всех `project_id IS NOT NULL`, 5 `data_json` больше 1,000,000 байт; это обосновывает приоритет серверной фильтрации при сохранении legacy-совместимости. Измерение памяти Python и точная причинность OOM остаются непроверенными.
 
 **Approval gate OOM-05:** запросить у владельца явное разрешение отдельно на (1) создание ветки/PR с изменением кода и тестами, (2) деплой в Render. До разрешения не менять код, runtime, env, БД или тариф. OOM-04 завершён как проектирование, не как внедрение.
+
+- **2026-11-19 — OOM-05 approved, OOM-06 in progress:** Owner explicitly approved code/test preparation in a separate branch and deployment **only after successful verification**, with rollback. Director branch `fix/oom-bounded-memory-reads-20261119` from deployed baseline `f95bc0e4b68a083d8acf3bb09c1c8d4c3e9762dc`; draft PR https://github.com/peonyrhodo-bit/site-insight-engine/pull/66. Commit `0eac8b51d5c6029b6437f3201cc39023bf808ae9` reduces `_recent_for_project` default page size 1000→50 without changing row projection or result filtering; commit `c20ba94ccd7b771374299f3ebd9d04e6eebacae3` adds isolated fake-client tests for first-page bound, legacy nested project across pages, timeout propagation. **Tests not yet executed**; draft PR mergeable=false (may be draft/unchecked); no merge/deploy. This is a conservative mitigation rather than the full server-side filtering proposal; it preserves analytical data semantics but may increase request count and does not prove OOM eliminated. Before deploy: run tests and review query/request-count regression, verify analytics unchanged, review PR checks, then use authorized deploy with rollback and monitor. No production modifications.
