@@ -152,3 +152,13 @@ Render app logs `srv-dae6fi61egvs73b4pa90`, интервал 14:30–14:38 UTC, 
 - GET `director_runs?select=*` в 14:34:05 произошёл **во время decide**, но код `_find_completed_idempotent_run` относится к отдельному пути обработки idempotent request и не доказано, что этот конкретный GET вызван им. Не связывать без call stack.
 
 **Новая гипотеза:** кратковременный пик может быть связан с одновременным удержанием аналитики и формированием AI-контекста/сериализацией. **Не доказано:** вклад LLM и источник GET history; нужна проверка размера bounded AI context, текущего RSS вокруг `generate_decision`, без дорогих вызовов API.
+
+## Проверка ограничений AI payload на deployed commit f95bc0e
+
+- `director/director.py:280–329`: `_bound_ai_value` рекурсивно ограничивает вложенность `max_depth=5`, количество элементов на каждом уровне `max_items=30`, строки `max_string_chars=4000`.
+- `director/director.py:330–386`: `to_ai_decision_dict` ограничивает top-level списки (observations 8, opportunities 20, research_history 10 и т.д.) и применяет рекурсивную границу также к analytics/topics/metadata. Это не безграничная сериализация всей истории.
+- `director/director.py:1585–1620`: `_enrich_decision_with_ai` создаёт bounded `ai_context` и сохраняет full `analysis` в локальном контексте.
+- `server.py:1614–1655`: `generate_decision` вызывает `build_decision_prompt` и `provider.generate_json`.
+- `ai/prompts.py:448–479`: `_serialize_context` делает `json.dumps` и `serialized.encode('utf-8')`, лимит по умолчанию 1,500,000 байт, переменная `DIRECTOR_AI_CONTEXT_MAX_BYTES`, clamp 64,000–4,000,000; превышение вызывает `ValueError` до provider call. Дополнительные кратковременные копии строк/bytes возможны, но размер именно контекста ограничен.
+
+**Классификация:** гипотеза «в AI уходит неограниченная история» опровергнута кодом. Причинность AI-подготовки для OOM не установлена. Следующий приоритет — фактическая память полных analytics/results и удержание структур между фазами, а также идентификация источника `director_runs?select=*` при `decide`.
