@@ -57,3 +57,13 @@ A read-only Render log search on `site-insight-engine` for 2026-11-12–19 confi
 **Proven:** Render Director can reach the actual MCP service and establish protocol sessions at these times. **Not proven:** tool-level research success, YouTube API results, or completed Director cycle. No new requests were sent to the production endpoints during this check.
 
 The orchestrator Render log search filtered by `engine`/`director` produced no entries in the examined period. This is not proof of broken connectivity, but the orchestrator → Director edge remains unverified. **№006 stays open** until that last link is evidenced or explicitly dispositioned.
+
+## Follow-up: orchestrator startup and safe diagnostic route (2026-11-19)
+
+Source verified against `ai-youtube-system/main`:
+
+- `Dockerfile` copies `server.py`, `backup.py`, and `scheduler.py`, but its **only** CMD is `uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}`. Thus the image's declared default process **does not start** `scheduler.py`. Render reports Docker runtime and no Docker command override in service metadata. This does not exclude a separately scheduled external caller, which remains unverified.
+- `server.py` defines `GET /health` as **local-only health** and `GET /status` as an **upstream proxy check**: it performs `GET {ENGINE_URL}/health` via `engine_request`, returns `engine.status=ok/error` and reports the configured engine URL. These two endpoints must not be conflated. `GET /status` does not trigger `POST /director/run` in the checked code.
+- No runtime environment-value getter is exposed by the connected Render integration. The existing Render logs inspected did not demonstrate an orchestrator → Director proxy request; lack of evidence is not proof of a fault.
+
+**Next non-mutating acceptance check:** owner-authorized read-only `GET https://ai-youtube-system.onrender.com/status` and inspect **only** the `engine.status` and hostname (do not publish tokens or private diagnostic payloads). Because free-tier wake-up checks were deferred by the owner, do **not** force a wake-up just to complete this checkbox. Until evidence is available, №006 stays open.
