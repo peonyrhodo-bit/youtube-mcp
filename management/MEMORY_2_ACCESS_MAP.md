@@ -64,3 +64,16 @@
 6. `DirectorContext.to_dict` (176–177) и `DirectorResult.to_dict` (232–233) используют `asdict(self)`, что может **глубоко копировать вложенные списки и словари** при вызове. Надо найти реальные call sites, размеры payload и частоту; наличие метода не означает, что он участвует в OOM.
 
 **Гипотеза для проверки M04:** одновременное удержание рабочих наборов `data_service` + `memory_service` + `context.metadata` + сериализация `asdict` могут объяснять пик, но **причинная связь с OOM не доказана**. В M16–M22 проектировать compact view для конкретной фазы и отложенную выборку доказательств, сохраняя потоковые агрегаты и полный доступ к истории.
+
+## M02 — дополнительные реальные call sites и риск повторной загрузки
+
+Проверены `director/director.py` и `director/autonomy.py` в `site-insight-engine` (main).
+
+- `Director._autonomy_research` около строк 2426–2456: при `completed/partial` research, если executor ещё не сохранил данные, вызывается `data_service.ingest_research_execution`; комментарий прямо запрещает повторное сохранение всего in-memory opportunity registry из-за риска исчерпания **512 MiB**. **После сохранения всегда вызывается `await self.inspect()`**, то есть в одном автономном цикле данные могут повторно загружаться и объединяться. Не доказано, что старые объекты при этом остаются живыми; проверить GC, ссылки, heap и peak RSS.
+- `Director.inspect` вызывает оба источника `memory_service.get_context` и `data_service.get_project_state`; повторный `inspect` после research — конкретная точка измерения для M04.
+- `DirectorContext.to_dict` (176–177) и `DirectorResult.to_dict` (232–233), `DirectorState/CycleEvent/DirectorCycle.to_dict` (`director/autonomy.py`, 77/92/119) используют `asdict`. В `Director` подтверждены вызовы `last_cycle.to_dict()` (625, 642), `plan.to_dict()` (2374, 2501), `decision.to_dict()` (1596, 2703–2704), `recommendation.to_dict()` (1788, 2747). **Вызова именно `DirectorContext.to_dict()` в этих двух файлах не обнаружено**; не приписывать ему OOM без других call sites.
+- `Director._autonomy_research` (2461–2466) кладёт в `context.metadata` весь `research_execution` и `data_ingestion`. Эти поля могут увеличивать живой контекст, особенно если результаты содержат вложенные payload. Нужна оценка размеров/срока жизни, а не слепое удаление (важны статусы и доказательства).
+- `Director.analyze` использует `context.to_analysis_dict()` (1131), то есть shallow view без глубокой копии. Сохранить это при оптимизации.
+- `Director.apply_feedback` (около 2069–2140) сохраняет обратную связь через `memory_service.apply_recommendation_feedback` и ограничения через `save_constraint`. Эти данные — **защищённые** (R27/R30), не кандидаты на TTL.
+
+**Приоритет следующей трассировки:** определить реализацию `data_service.get_project_state`, сборку приложения/создание сервисов, размер `research_execution` и `context.metadata` перед/после повторного `inspect`, затем MCP/Orchestrator. Сохранять различие между проверенным call site и гипотезой об OOM.
