@@ -190,3 +190,23 @@ Potential follow-up task, no implementation permission: benchmark (locally with 
 | research_sets | 68 | 7969895 | 132625 |
 
 Для `research_sets`: avg 117204 B, median 120343 B, p95 129495 B, **65 из 68** строк >100000 B. Это систематически крупные записи, а не единичный выброс. Общий текстовый JSON объём трёх таблиц 16152082 B (~15.4 MiB). Учитывать, что `load_research_data` сохраняет только до 5000 из 30478 relations в working registry, но все 68 research_sets. Вопросы для следующей проверки: какие колонки/JSON-поля research_sets занимают большую часть и как `ResearchSet.from_dict` копирует их; можно ли сохранить полный evidence в БД, загружая компактное представление в рабочий реестр. Не делать вывод об OOM из одного размера строк.
+
+## Research sets: breakdown of JSON size by column/key (Supabase read-only SQL)
+
+All 68 `public.research_sets` rows, aggregate `octet_length(jsonb::text)`:
+
+| Field | JSON text bytes |
+|---|---:|
+| metadata | 7255359 |
+| metadata.research_plan | 5484208 |
+| metadata.operation_results | 1768295 |
+| snapshot_ids | 548094 |
+| video_ids | 97547 |
+| expected_data | 4692 |
+| gathered_data | 4391 |
+| query_ids | 7830 |
+| missing_data | 431 |
+
+The two metadata subkeys together are 7252503 bytes, ~91.0% of whole `research_sets` JSON representation (7969895 bytes), and nearly all metadata. `research_plan` max per row 91929 bytes; `operation_results` max 29756 bytes. Query returned aggregate sizes and key names, no research content.
+
+Deployed `data/research_sets.py:751–802` `ResearchSet.from_dict` passes `metadata` through, and `__post_init__` line ~274 does `self.metadata=dict(self.metadata or {})` — **shallow copy** of outer dict, not a recursive deep copy of the two large nested payloads. The full metadata remains reachable in the live registry, so retained memory is plausible, but double deep copying is not proven. Assess whether the active Director cycle actually needs full plans and operation results in every live `ResearchSet` before proposing compact hydration. Preserve full evidence in Supabase and avoid semantic regression.
