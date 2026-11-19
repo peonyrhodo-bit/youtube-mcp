@@ -169,3 +169,18 @@
 6. `server.py` (2780–2789, 2832–2842, 2885–2899) глубоко сериализует цикл и несколько раз сохраняет полный результат. Read-only Supabase SQL подтвердил: `recent_results` ~3.47 MB внутри `project_assessment.memory_state`, ещё раз через `work_plan.basis.memory_state` для run 43.
 
 **Уточнение:** это подтверждённый кодом механизм **вложенной исторической самоссылочной структуры по значениям**, а не доказанная бесконечная рекурсия Python-ссылок. Рекомендованный порядок безопасного патча: (a) bounded lightweight projection для `recent_results` в summary, сохраняя IDs, статус, timestamps, short summary и provenance; (b) убрать дублирующую тяжёлую сериализацию при logging, логировать счётчики и ID; (c) исключить двойное хранение `basis` в сериализуемом state, сохранив доступ к оценке/плану; (d) offline tests с legacy huge fixtures, status/error/restore parity. Ни один пункт не внедрён.
+
+## M02 — патч-контракт и критичная граница источника memory_state
+
+Проверено дополнительно: `memory/supabase.py:get_context` (1132–1202) читает `results` через `get_recent_results` (1419–1431), который вызывает `_recent_for_project` с ограничением **числа строк**, но без lightweight projection. `memory/director_adapter.py:get_context` (600–660) делегирует backend и сохраняет статусы полноты. `director/director.py:inspect` (445–476) вызывает memory service с `limit_results=20` и применяет только complete-read semantics для удаления устаревших значений.
+
+**Важная неразрешённая деталь:** в изученном `director/director.py` явного присваивания `context.metadata['memory_state']` не обнаружено; `_memory_state_summary` (888–903) **читает** это поле. Следовательно, хотя наличие больших `recent_results` в сохранённых `work_plan.basis.memory_state` доказано SQL, **точный конструктор memory_state в runtime ещё надо найти**. Не утверждать, что `get_context` напрямую формирует `memory_state` без трассировки дополнительного слоя. Проверить factory/adapter и другие модули, прежде чем править.
+
+**Тестовый контракт будущего патча (без изменения production):**
+1. Полный результат по ID сохраняется в авторитетной истории; рабочий summary не включает `result.data_json.result` и вложенные `state.metadata`.
+2. `recent_results` ограничен одновременно по числу и по размеру (в байтах), содержит ID, project_id, run_id, тип, дату, статус/краткое описание и ссылку/provenance; не выдумывать отсутствующие поля.
+3. Разделить API чтения полной записи для аудита и лёгкой проекции для планирования; сохранить `complete/partial/error` семантику, проектную изоляцию и корректность legacy unscoped.
+4. Проверить сериализацию повторных циклов на искусственных данных 2–5 MB: размер **нового** результата должен оставаться ограниченным независимо от размера истории; полный архив восстанавливается по ID.
+5. Проверить отказ Supabase на update: статус и результаты не теряются, идемпотентность и retry bounded; логирование без полного JSON.
+
+M02/M03/M04 — **не приняты**, это read-only evidence и проектирование.
