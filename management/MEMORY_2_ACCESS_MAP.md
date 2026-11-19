@@ -230,3 +230,17 @@ Read-only: `server.py:Runtime.get_director` (1978–2003) создаёт Directo
 Выявлена дополнительная граница контракта: `memory/director_adapter.py:get_context` (639–649) допускает backends без `_memory_read` и присваивает им статус complete (например, in-process backend). Проверить фактический класс `Runtime.memory` и все альтернативные реализации get_context до окончательного заключения о происхождении memory_state. Без этого M02 не закрывать.
 
 Независимый от источника защитный seam для будущего offline patch: `Director._memory_state_summary` (888–903), где сейчас `rows[-5:]` без проекции и с полным `data_json`; добавить bounded fields/byte caps + IDs и source retrieval, не менять durable originals. Требуются тесты на 2.34MB historical fixture, project isolation, partial/error reads и неизменность источника. Никаких изменений runtime.
+
+## M02 — КОНСТРУКТОР memory_state НАЙДЕН, upstream-трассировка закрыта (read-only)
+
+В `site-insight-engine/memory/memory.py` обнаружен ранее пропущенный слой `Memory`:
+- `memory/director_adapter.py:ServerMemory.__init__` (476–495) создаёт `self.backend = self._create_backend()` и `self.memory = Memory(backend=self.backend)`; `_create_backend` (520–559) выбирает Supabase при наличии URL+KEY, иначе допустим in-memory fallback.
+- `server.py:Runtime.__init__` (1674–1683) создаёт `self.memory = ServerMemory()`; `Runtime.get_director` (1978–2003) передаёт этот объект как `memory_service`.
+- `memory/director_adapter.py:ServerMemory.get_context` (600–662) вызывает `self.memory.get_context`.
+- **`memory/memory.py:Memory.get_context` (267–325)** вызывает `self.backend.get_context` и затем `self._build_memory_context(context)`.
+- **`memory/memory.py:_build_memory_context` (327–410)** формирует `context['memory_state']` (399–408), присваивая `recent_results: results` (404) без bounded projection. Это точный upstream конструктор. Исходные `results` читаются через `memory/supabase.py:get_context` (1132–1202), `get_recent_results` (1419–1431) без field projection.
+- `Director.inspect` (445–476) через `_merge_context` (851–886) кладёт `memory_state` в `context.metadata`; `_memory_state_summary` (888–903) берёт последние 5 объектов **целиком**; `work_plan.basis` (2584) включает summary; `_autonomy_assess` (2634–2641) сохраняет дубли и логирует полные JSON; `DirectorCycle.to_dict` и `server.serialize` глубоко копируют.
+
+**Вывод:** полный путь от durable source до live oversized plan и логов подтверждён кодом и cross-source наблюдением `director_results.id=9` / `run_id=79`. Прежние пометки «конструктор не локализован» **устарели**; исправлены этой записью. M02 upstream tracing технически завершён, но **формальная приёмка M02 не проведена** (тестовые критерии/проверка полноты и ограничений впереди).
+
+**Контракт будущего исправления:** полная запись `results` и durable Supabase history не удаляются; bounded read-model для планирования в `_build_memory_context` и/или `_memory_state_summary` должен ограничивать размер, а не только count, сохранять id/run_id/type/time/status, provenance, явный флаг omitted + drill-down; не терять pending constraints/approvals и корректную обработку partial/error. Offline tests на вложенных 2.34 MB fixtures и memory profiling до production patch. Никаких production изменений.
