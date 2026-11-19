@@ -162,3 +162,11 @@ Render app logs `srv-dae6fi61egvs73b4pa90`, интервал 14:30–14:38 UTC, 
 - `ai/prompts.py:448–479`: `_serialize_context` делает `json.dumps` и `serialized.encode('utf-8')`, лимит по умолчанию 1,500,000 байт, переменная `DIRECTOR_AI_CONTEXT_MAX_BYTES`, clamp 64,000–4,000,000; превышение вызывает `ValueError` до provider call. Дополнительные кратковременные копии строк/bytes возможны, но размер именно контекста ограничен.
 
 **Классификация:** гипотеза «в AI уходит неограниченная история» опровергнута кодом. Причинность AI-подготовки для OOM не установлена. Следующий приоритет — фактическая память полных analytics/results и удержание структур между фазами, а также идентификация источника `director_runs?select=*` при `decide`.
+
+## Удержание данных в реестрах при загрузке (deployed f95bc0e)
+
+`server.py:1090–1248` (`DataAdapter`): при первой загрузке project ID YouTube loader возвращает dict; код извлекает history_analytics, очищает live registry, поочерёдно переносит queries/videos/snapshots через `pop` и `add_*`, затем `del persisted`. Это **существующая защита** от одновременного удержания двух полных наборов; не считать её отсутствующей.
+
+В отличие от YouTube loader, `load_opportunity_data` возвращает `persisted_opportunity`, из которого извлекается history_analytics, затем `OpportunityDataRegistry.from_dict(persisted_opportunity)` создаёт registry; явного `del persisted_opportunity` сразу после вызова нет. Research loader получает `persisted_research`, затем переносит 330 queries, 68 research sets, 30478 relations в live registries через `from_dict`/`add_relation`; временные dicts и registry могут сосуществовать до выхода из области видимости функции. Из логов на 14:33:55: 30478 relations scanned, но `project_data_loaded` показывает 5000 live relations — требуется изучить limit и структуру промежуточного агрегата до вывода о дублировании.
+
+**Доказано:** отличающиеся стратегии переноса и жизненного цикла временных контейнеров; полноценное исследование пика требует проследить ссылки/освобождение объектов, размеры relation records и рабочие лимиты. **Не доказано:** что отсутствие `del` создаёт долговременную утечку или OOM; локальные переменные освобождаются после возврата, а registry может разделять вложенные объекты.
