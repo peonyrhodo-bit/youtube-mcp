@@ -184,3 +184,15 @@
 5. Проверить отказ Supabase на update: статус и результаты не теряются, идемпотентность и retry bounded; логирование без полного JSON.
 
 M02/M03/M04 — **не приняты**, это read-only evidence и проектирование.
+
+## M02 — верификация источника memory_state: выявлен разрыв между историческими данными и текущим кодом
+
+Дополнительный read-only просмотр `site-insight-engine`:
+- `director/director.py:__init__` (243–270) создаёт Director и подключает сервисы; явного построения `memory_state` здесь нет.
+- `inspect` (445–476) получает `external_context` от `memory_service.get_context` и передаёт его ключи через `_merge_context` без переименования в `memory_state`; `_merge_context` (851–886) неизвестные ключи помещает напрямую в `context.metadata[key]`.
+- `memory/director_adapter.py:get_context` (600–662) делегирует `memory.get_context`, нормализует ID рекомендаций и read-status; **не создаёт `memory_state`**.
+- `memory/supabase.py:get_context` (1132–1202) возвращает ключи `runs,decisions,recommendations,constraints,events,chat,actions,results,_memory_read`, **не `memory_state`**. `get_recent_results` (1419–1431) использует `_recent_for_project` без проекции.
+- В изученном текущем `director/director.py` `_memory_state_summary` (888–903) читает `context.metadata['memory_state']`, но прямого присваивания нет. **Следовательно, нельзя утверждать, что текущий `get_context` автоматически наполняет именно этот summary.** Крупные `memory_state` внутри исторических run IDs 43/45/77/79 — доказательство формата сохранённых запусков 14–16 ноября, не обязательно текущего runtime после деплоя 19 ноября.
+- Текущий `server.py:serialize` (303–343) и `DirectorCycle.to_dict` (autonomy.py 118–119) по-прежнему дают подтверждённый путь глубокой сериализации. `_autonomy_assess` (director.py 2570–2641) по-прежнему дублирует basis в state и логирует JSON целиком, **если** `memory_state` присутствует.
+
+**Контрольный следующий шаг:** установить точный SHA исторических деплоев и сравнить версию конструктора `memory_state`; read-only проверить текущие логи `DIRECTOR WORK PLAN` (только длины/ключи) и текущий объект `memory_state`, не выполнять новых циклов. До этого не считать «вложение истории через memory_state» доказанным для текущего production и не внедрять патч на предположении.
