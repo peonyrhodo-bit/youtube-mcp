@@ -1,0 +1,61 @@
+# Director 3.0 — проект памяти: контракт реализации v1
+
+Дата: 2026-11-19. **Статус: проект архитектуры для согласования, без изменения production.** Основание: `MEMORY_INTELLIGENCE_2_DESIGN.md`, `MEMORY_2_BOUNDED_CONTEXT_CONTRACT.md`, `MEMORY_2_ACCESS_MAP.md`, неизменяемое ТЗ Director 3.0. Этот документ отделяет проект памяти от общего аудита M01–M40.
+
+## 1. Три уровня памяти и владельцы данных
+
+| Уровень | Содержимое | Источник истины | Допустимые действия |
+|---|---|---|---|
+| L0 — долговременная память | исходные исследования и снимки, прогнозы/факты, решения, согласования, рекомендации, задачи, планы, история статусов, provenance | существующий Supabase, без миграции на первом этапе | append/update по текущим контрактам; никакого автоматического удаления |
+| L1 — индекс/представление | ID, project_id, тип, created_at, status, короткое резюме, evidence IDs, полнота и версия | вычисляемая проекция из L0; не замена L0 | безопасное чтение и воспроизводимое пересоздание |
+| L2 — рабочий контекст | последние релевантные факты, открытые обязательства, компактные сигналы, ссылки на L0 | временный объект одного цикла Director | ограничить по байтам и времени жизни; не сериализовать внутрь нового L0 result |
+
+**Принцип:** полный исторический результат никогда не вкладывается в следующий результат целиком. Цикл хранит собственный итог и **ссылки** на источники; при необходимости читает конкретный источник отдельно.
+
+## 2. Контракт L1: ResultRef (проект API, не утверждение о существовании endpoint)
+
+```json
+{
+  "source_table": "director_results",
+  "source_record_id": 9,
+  "project_id": "<validated project scope>",
+  "run_id": 79,
+  "result_type": "autonomous_cycle",
+  "created_at": "<UTC timestamp>",
+  "status": "<existing status or null>",
+  "summary": "<bounded plain text>",
+  "evidence_ids": [],
+  "details_omitted": true,
+  "read_completeness": "complete"
+}
+```
+
+IDs и поля должны проверяться по реальной схеме и legacy project matching; пример не является миграцией. Никаких секретов, full `data_json`, рекурсивного `memory_state`, вложенного `work_plan.basis` в ResultRef. Неизвестное поле = явное null/unknown, не выдумывать.
+
+## 3. Контракт L2: ContextEnvelope
+
+Поля: `schema_version`, `project_id`, `as_of`, `completeness` (`complete|partial|error|unavailable`), `limits` (byte cap, row cap, actual bytes), `source_counts`, `omitted_counts`, `protected_open_items` (IDs и статусы), `recent_result_refs`, `evidence_refs`, `last_successful_cycle_ref`, `errors`. Статус `partial` никогда не маскируется под пустую успешную память.
+
+**Лимиты — предложения для offline тестов, не production настройки:** общий сериализованный L2 <=64 KiB, `recent_result_refs` <=20, `summary` <=512 UTF-8 bytes на объект. Считать именно `len(json.dumps(..., ensure_ascii=False).encode('utf-8'))`; если ограничение не выдержано, детерминированно убирать необязательные элементы и показывать omitted counts. Если защищённые открытые решения/согласования не помещаются, выставить `partial` и запретить автономные действия, зависящие от невидимых условий; **не отбрасывать тихо**. Числа согласовать по измерениям до внедрения.
+
+## 4. Точки изменения (только будущий patch, после разрешения)
+
+1. `memory/supabase.py:get_context/get_recent_results`: добавить отдельный bounded projection/read method, сохранить существующий full read API для drill-down и совместимости; фильтрация project_id и порядок неизменны.
+2. `memory/memory.py:_build_memory_context`: заменить `memory_state.recent_results=results` и raw `context.results` на ResultRef в operational ветке; не мутировать исходные записи. `Memory.snapshot` должен выдавать тот же компактный envelope.
+3. `director/director.py:_memory_state_summary` и `_merge_context`: принимать только bounded envelope, не копировать full `data_json` в `work_plan.basis` или `project_assessment`.
+4. `director/director.py:_autonomy_assess` и `server.py` логирование: печатать counts, IDs, completeness, sizes, а не полные work_plan/assessment JSON.
+5. `server.py:run_director_autonomous_cycle` и `memory/supabase.py:update_run`: сохранить все защищённые решения, статусы и ссылки; оптимизацию write path и миграцию схемы **не смешивать** с первым исправлением bounded context.
+
+## 5. Чтение полной истории без переполнения RAM
+
+Будущий read-only drill-down по `source_table + source_record_id + project_id`, с проверкой принадлежности проекту и явным `not_found|forbidden|unavailable`. Для истории — cursor/keyset страницы и заданные time/project фильтры, без массовой материализации `data_json`. До реализации endpoint не обещать, что он существует; полный источник уже хранится в Supabase.
+
+## 6. Тесты и критерии готовности проекта
+
+Использовать BC-01…BC-10 из `MEMORY_2_BOUNDED_CONTEXT_CONTRACT.md`: synthetic 2.34 MB, 5–20 вложенных результатов, project isolation, protected approvals, partial/error, snapshot, logs, ×2/×5 рост, full retrieval. Дополнительно сравнить hash L0 до/после, полные counts и ссылки, статусы failed/partial/success, legacy совместимость. Gate: 0 необъяснённых потерь данных, 0 скрытых защищённых ограничений, детерминированный byte cap; peak RSS измерять отдельно, не заявлять его снижение без профиля.
+
+## 7. Последовательность и отдельные согласования
+
+**A.** Offline contract tests + fixture + измерение размера L2. **B.** Малый обратимый code patch под feature flag (L1/L2), без schema change. **C.** Offline parity + нагрузочные тесты и проверка на Render только с отдельным разрешением deploy. **D.** Затем отдельный проект incremental analytics и retention/archive, без автоматической очистки. Точки согласования: (1) byte cap, (2) разрешение code patch, (3) deploy/canary, (4) любые миграции/удаления/внешние расходы. Отдельный аудит quota/M15 не должен блокировать завершение **дизайна памяти**, но ошибки исследовательских вызовов учитываются в автономном режиме.
+
+**Итог:** архитектурный контракт памяти подготовлен; **не реализован и не принят**. 0/40 общих контрольных этапов формально принято.
