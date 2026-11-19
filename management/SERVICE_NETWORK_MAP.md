@@ -78,3 +78,16 @@ Owner reports new `503` on `https://site-insight-engine.onrender.com/` after wak
 - A separate application stack trace at 17:29:27 ends with `MemoryReadError: Memory context read partial: runs`; this is a distinct observed application error, not proof of OOM cause.
 
 **Operational caution:** Do not run `/director/run`, redeploy, change environment, or raise plan without owner approval. A safe `GET /status` from the orchestrator may fail while Director is cycling; №006 remains blocked until stable evidence. Track the repeated OOM as an incident and as input to №056. No production changes made by audit.
+
+## Memory pressure investigation (2026-11-19, read-only)
+
+Render metrics for Director 16:00–18:00 UTC: `memory_limit` 536,870,900 bytes (512 MiB); sampled `memory_usage` at **16:18 UTC = 536,715,260 bytes** (~511.85 MiB). Other samples show 407 MB and 435 MB before restarts. Samples belong to different instance IDs and cannot be interpreted as a single uninterrupted curve.
+
+Focused Director application logs 17:15–17:32 UTC:
+- **17:20:29** autonomous wakeup worker started (`poll=5s interval=3600s`).
+- **17:20:41** `Autonomous wakeup failed`, `WakeupReason.SCHEDULED`.
+- **17:21:09**, **17:21:33** `Autonomous wakeup failed`, `WakeupReason.RETRY`.
+- **17:22:21** Render event `server_failed`, `oomKilled`, 512 MiB.
+- Similar worker starts and scheduled failures occur following restarts, e.g. **17:22:48**, **17:22:59**.
+
+**Interpretation:** recurring autonomous wake/retry failures closely precede at least one OOM restart, making the worker/retry path a high-priority candidate. This is temporal correlation, not proven causal attribution. A separate `MemoryReadError` was observed earlier. Do not switch `AUTONOMOUS_ENABLED` or redeploy without owner approval. Next safe investigation: inspect bounded stack traces and existing memory-phase log counters; propose a reversible change only after risk review.
