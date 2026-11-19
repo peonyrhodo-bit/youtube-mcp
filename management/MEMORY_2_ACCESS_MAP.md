@@ -257,3 +257,14 @@ GitHub `list_repositories(owner=peonyrhodo-bit)` подтвердил 4 дост
 **Промежуточный вывод:** в проверенных server entrypoints MCP и Orchestrator взаимодействуют с Director по HTTP, а не напрямую с его памятью. Это сужает M02 карту вызовов, но **не является полной инвентаризацией двух репозиториев**. GitHub code search `supabase`, `director_runs`, `rest/v1` вернул пустые результаты в обоих репозиториях; отрицательный результат индекса поиска не считать доказательством отсутствия кода.
 
 **Далее:** получить дерево файлов / точные модули обоих репозиториев и исследовать все storage/DB call sites, а также quota-authority endpoint в `site-insight-engine`. Дополнить таблицу методами, полями, объёмами и границами ответственности. M02 остаётся 🔄, 0/40 принято.
+
+## M02 — MCP→Director→Postgres quota ledger: подтверждённая сквозная цепочка (19 ноября)
+
+**Проверены source entrypoints и зависимости:**
+- `youtube-mcp/server.py:YouTubeQuotaGuard` (41–100) вызывает `POST {YOUTUBE_QUOTA_AUTH_URL}/internal/youtube-quota/authorize|finish` через `requests`, перед фактическим `requests.get` к YouTube (161–205). При недоступности/отказе центральной квоты блокирует API вызов.
+- `site-insight-engine/server.py` (2069–2127): закрытые `/internal/youtube-quota/authorize` и `/finish`, header secret, вызовы `runtime.quota_manager.authorize_call` (2092) и `finish_call` (2116).
+- `site-insight-engine/quota/postgres_youtube_quota.py:YouTubeQuotaManager` (194–313): `psycopg` direct PostgreSQL; при authorize `pg_advisory_xact_lock` (212), читает агрегат usage, пишет `private.youtube_quota_usage` (249–257) и `private.youtube_quota_events` (265–275); при исчерпании пишет blocked event (229–239) без расходной строки; `finish_call` читает metadata (295–300), затем UPDATE `private.youtube_quota_events` (308–312). Это **отдельный direct-Postgres writer**, а не `memory/supabase.py` REST writer; он принадлежит Director, вызывается MCP по HTTP. Поля перечислены в SQL; рост: до одной usage + одной event записи на разрешённый вызов и одной event на заблокированный; фактическая скорость роста требует измерения.
+- `ai-youtube-system/server.py` (277 строк) использует `httpx` к `ENGINE_URL` и проксирует Director endpoints. Прямого DB-клиента в этом файле нет.
+- В проверенных `requirements.txt`: MCP содержит `requests`, Orchestrator `httpx`, прямых `psycopg`/`supabase` зависимостей не обнаружено. **Не считать это полным доказательством отсутствия иных способов DB доступа** без просмотра дерева и дополнительных модулей.
+
+**M02 ограничение:** полная таблица reader/writer call sites по всем репозиториям и оценка фактических объёмов ещё не закрыта. Новые SQL/YouTube вызовы не выполнялись; это source-only инспекция. Статус 🔄, 0/40 accepted.
