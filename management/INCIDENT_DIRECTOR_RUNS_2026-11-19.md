@@ -142,3 +142,13 @@ Render app logs `srv-dae6fi61egvs73b4pa90`, интервал 14:30–14:38 UTC, 
 - 14:34:09.0 Render `server_failed` `oomKilled.memoryLimit=512Mi`.
 
 **Вывод:** перед OOM накопленный пик процесса ~491.7 MB, а последняя подтверждённая стадия — `decide`, с одновременной загрузкой истории запусков и вызовом LLM. Точная аллокация, превысившая лимит, неизвестна; нельзя утверждать, что OpenRouter или history scan по отдельности являются доказанной первопричиной. Показания `vmhwm_mb` и `vmrss_mb` — разные метрики (исторический пик и текущая резидентная память). Проверить код `_process_memory_mb` для точной единицы MB перед арифметическим сравнением с MiB.
+
+## Разбор decide на deployed commit f95bc0e
+
+- `server.py:49–62`: `_process_memory_mb()` читает `VmRSS`/`VmHWM` из `/proc/self/status`, делит KiB на 1024. Значения в логах — **MiB**, несмотря на суффикс `_mb`. Следовательно, `491.7` означает **491.7 MiB**, запас до лимита 512 MiB ~20.3 MiB.
+- `director/director.py:2650+`: `_autonomy_decide` вызывает `self.decide(analysis)`.
+- `director/director.py:1432–1527`: `decide` делает `opportunities=list(analysis.get(...))`, затем `all_opportunities=list(opportunities)`, затем новый список после фильтрации; при наличии AI вызывает `_enrich_decision_with_ai(decision,analysis)`. Это **несколько списков ссылок**, но не копии всех вложенных JSON; сами по себе не доказывают большой расход.
+- `director/director.py:1585–1635`: `_enrich_decision_with_ai` формирует `ai_context=self.to_ai_decision_dict()` и отправляет ограниченное представление анализа (topics, analytics, opportunities, signal interpretation, hypothesis) в `generate_decision`, при этом полный `analysis` остаётся в памяти. Требуется проверить реальный размер `to_ai_decision_dict` и сериализацию/логирование в AI client.
+- GET `director_runs?select=*` в 14:34:05 произошёл **во время decide**, но код `_find_completed_idempotent_run` относится к отдельному пути обработки idempotent request и не доказано, что этот конкретный GET вызван им. Не связывать без call stack.
+
+**Новая гипотеза:** кратковременный пик может быть связан с одновременным удержанием аналитики и формированием AI-контекста/сериализацией. **Не доказано:** вклад LLM и источник GET history; нужна проверка размера bounded AI context, текущего RSS вокруг `generate_decision`, без дорогих вызовов API.
