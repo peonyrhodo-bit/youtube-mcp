@@ -46,3 +46,14 @@ Read-only Render application logs, window 2026-11-18T00:00Z–2026-11-19T17:00Z:
 - **Still open:** orchestrator → Director HTTP request success, Director → MCP research call success, effective production hostname settings. Do not equate a successful root GET with the application integration.
 
 These observations strengthen №006 evidence but do not satisfy all remaining acceptance gates. Status remains **проверено частично**, progress unchanged.
+
+## Follow-up: Director → MCP transport observed (2026-11-19)
+
+A read-only Render log search on `site-insight-engine` for 2026-11-12–19 confirms **actual Director → YouTube MCP transport**, not merely code intent:
+
+- **2026-11-18 14:22:47 UTC:** `POST https://youtube-mcp-u39z.onrender.com/mcp` HTTP 200; `mcp.client.streamable_http` received a session ID and negotiated MCP protocol `2025-11-25`; subsequent GET 200, POST 202 and POST 200 requests to `/mcp` occurred through 14:23:21.
+- **2026-11-19 00:06:18 UTC:** another `POST /mcp` HTTP 200, new session and protocol negotiation; GET 200 and POST 202/200 followed.
+
+**Proven:** Render Director can reach the actual MCP service and establish protocol sessions at these times. **Not proven:** tool-level research success, YouTube API results, or completed Director cycle. No new requests were sent to the production endpoints during this check.
+
+The orchestrator Render log search filtered by `engine`/`director` produced no entries in the examined period. This is not proof of broken connectivity, but the orchestrator → Director edge remains unverified. **№006 stays open** until that last link is evidenced or explicitly dispositioned.
