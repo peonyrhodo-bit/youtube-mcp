@@ -36,3 +36,13 @@ Read-only `Render.list_logs` for orchestrator `srv-dag8tl2d0e5s73af02q0`, window
 A narrow `type=request` log query for all three services for 2026-11-19 12:00–16:30Z returned no entries; this is **insufficient evidence** to conclude no requests occurred (request/app log types and retention/filtering differ). Do not interpret an empty filtered query as an outage.
 
 Render integration currently exposes service metadata and logs but no read-only environment-variable getter in the available tool catalog; do not use mutation APIs to infer environment settings. Therefore the configured `ENGINE_URL` and `YOUTUBE_MCP_URL` remain unverified. Safe follow-up: examine sanitized application health output or owner-provided hostname-only settings; do not dump secrets.
+
+## Follow-up: observed Director → Supabase and public MCP HTTP (2026-11-19)
+
+Read-only Render application logs, window 2026-11-18T00:00Z–2026-11-19T17:00Z:
+
+- **Director → Supabase confirmed for reads:** `site-insight-engine` logs at **16:28:32–16:28:40 UTC** show HTTP/2 **200 OK** from `https://oxbxnswywgpdlcfltmbq.supabase.co/rest/v1/` for `director_runs`, `decisions`, `recommendations`, `constraints`, `system_events`, `chat_messages`, `director_actions`, `director_results`. This is actual outbound service connectivity, but not proof of correct project isolation or write permissions.
+- **Public MCP web root responded:** `youtube-mcp` logs at **14:00:48**, **15:00:51**, **16:00:47 UTC** show `GET /` **200 OK**. This does **not** prove the MCP tool transport or YouTube API search works.
+- **Still open:** orchestrator → Director HTTP request success, Director → MCP research call success, effective production hostname settings. Do not equate a successful root GET with the application integration.
+
+These observations strengthen №006 evidence but do not satisfy all remaining acceptance gates. Status remains **проверено частично**, progress unchanged.
