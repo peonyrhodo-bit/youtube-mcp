@@ -46,3 +46,11 @@ Cap serialized L2 context at proposed 64 KiB, preserve protected item IDs and in
 - **Before merge/deploy:** separate approval, CI and offline fixtures with reproducible outputs.
 - **Before autonomous production canary:** separate approval and baseline RSS/read metrics.
 - The management document itself does not constitute approval or a passing test.
+
+## Verified downstream safety contract (read-only inspection, 2026-11-19)
+
+Live `director/director.py:445–529`: `inspect` **already** branches on `_memory_read.status`. `complete` replaces empty state and marks healthy; `partial` merges available rows without erasing old values and sets `runtime_health.memory.status=degraded`; `error|unavailable` sets memory health unavailable. Therefore P0 propagation has a real existing consumer and should not require a new status transport.
+
+**But this is NOT an action gate:** `director/director.py:2584–2641` copies `memory_read` into `work_plan.basis`, while the listed research tasks (`refresh_evidence`, `discover_broadly`, `validate_hypotheses`, `persist_and_reinspect`, `use_daily_quota`) are assigned required/next/blocked based on freshness, coverage, capabilities and quota; the displayed task conditions do **not** inspect `memory_read`. The work plan and basis are also logged verbatim at 2640–2641. Thus P0-06 must test the **actual execution boundary**, not merely `runtime_health.memory` or presence of a `memory_read` field. No claim yet that every execution path is unguarded: inspect the executor separately.
+
+**Updated acceptance:** on failed `constraints` or `recommendations` read, `inspect` must show degraded/unavailable, and a test must prove no consent-dependent autonomous action executes. A red test is expected until a verified execution guard exists; do not mark P0 complete on status-only tests. The anti-amplification patch must also prevent raw work-plan/basis JSON logging. Existing production behavior not changed.
