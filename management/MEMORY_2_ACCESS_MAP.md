@@ -89,3 +89,12 @@
 - Возможная оптимизация для M18–M22: компактные observation projections, reuse по версии registry, bounded matched trend cohorts, ленивый evidence drill-down, но только при сохранении полного аналитического результата и семантики обновления после исследования. Нельзя без тестов кэшировать устаревшие наблюдения.
 
 **Обновлённая гипотеза M04:** проверить peak RSS на границах `load_* → registry → observations_built → Director.inspect → analyze → _autonomy_research → inspect`, различая DB fetch и пересборку рабочих структур. Приоритет — доказательство, не преждевременное изменение кода.
+
+## M04 — план измерения и ограничение доступа (2026-11-19)
+
+Кодовые точки измерения из `site-insight-engine/server.py`:
+- `get_project_state` 1126–1245: холодная загрузка из Supabase только при смене `_loaded_project_id`; отметка `DIRECTOR MEMORY phase=project_data_loaded` в 1246–1254.
+- `get_project_state` 1256–1415: построение `observations`, `previous_observations`, `trend_current_observations` из registry; отметка `DIRECTOR MEMORY phase=observations_built` в 1410–1415.
+- `Director.inspect` и `Director.analyze`: сравнить RSS после merge и во время анализа; повторный inspect после research отделять от холодной DB загрузки.
+
+**Попытка прочитать Render memory metrics и `DIRECTOR MEMORY` logs за 2026-11-19 18:10–20:00 UTC не выполнена:** подключение Render ответило `no workspace selected` и потребовало выбрать workspace с явным подтверждением пользователя. Никаких чисел из этой попытки не получено; старые исторические замеры не выдавать за новые. Нужен подтверждённый workspace для продолжения read-only измерений. Не вызывать `select_workspace` без подтверждения.
