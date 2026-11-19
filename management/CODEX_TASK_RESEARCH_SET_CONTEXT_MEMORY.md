@@ -26,3 +26,16 @@ Introduce a Director-only compact state projection (or opt-in `include_full_rese
 ## Gate
 
 No source-code changes, deploys, DB writes, or production calls as part of this management task. Implement only after user authorization and verified baseline. OOM root cause remains unproven; this is a measured data-volume and code-path optimization candidate, not a confirmed fix.
+
+## Additional endpoint/call-path audit (deployed f95bc0e)
+
+- `GET /director/snapshot` (`server.py:2267–2273`) explicitly awaits `director.inspect()`, which calls `DataAdapter.get_project_state()` and retains full serialized `research_sets` in Director metadata. Thus a read-only snapshot request can trigger this memory-heavy preparation even though its HTTP response is only `get_unified_state_snapshot()`. Include this path in optimization acceptance tests.
+- `GET /director-debug` (`server.py:3963–4001`) builds a selected diagnostic payload from an existing Director context and **does not itself call inspect**. Do not conflate it with `GET /radar-debug`, which calls full `get_project_state()`.
+- `GET /dashboard` (`server.py:3063+`) calls `director.status()` and memory `get_context()`, not `get_project_state()` in the inspected route start. The cycle handlers `server.py:2481+` and `2763+` call `run_once` and `run_autonomous_cycle`, which can inspect internally; verify actual mode-specific flow before test design.
+- `GET /radar` and `GET /radar-debug` remain direct consumers of full `get_project_state()` and are a compatibility gate. Any Director-only compact projection should be selected **before** recursively serializing full research sets; trimming afterward does not eliminate transient allocation.
+
+### Additional acceptance cases
+
+- Verify `/director/snapshot` uses the compact projection and still returns the same unified snapshot shape and accurate counts.
+- Verify `/director-debug` remains bounded and does not unexpectedly trigger data reload; distinguish from `/radar-debug` in tests and documentation.
+- Verify the shared Runtime/Director instance does not retain stale full `metadata['research_sets']` after switching to compact projection; no silent stale-data regressions.
