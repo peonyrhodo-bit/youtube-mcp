@@ -244,3 +244,16 @@ Read-only: `server.py:Runtime.get_director` (1978–2003) создаёт Directo
 **Вывод:** полный путь от durable source до live oversized plan и логов подтверждён кодом и cross-source наблюдением `director_results.id=9` / `run_id=79`. Прежние пометки «конструктор не локализован» **устарели**; исправлены этой записью. M02 upstream tracing технически завершён, но **формальная приёмка M02 не проведена** (тестовые критерии/проверка полноты и ограничений впереди).
 
 **Контракт будущего исправления:** полная запись `results` и durable Supabase history не удаляются; bounded read-model для планирования в `_build_memory_context` и/или `_memory_state_summary` должен ограничивать размер, а не только count, сохранять id/run_id/type/time/status, provenance, явный флаг omitted + drill-down; не терять pending constraints/approvals и корректную обработку partial/error. Offline tests на вложенных 2.34 MB fixtures и memory profiling до production patch. Никаких production изменений.
+
+## M02 — первый read-only проход по YouTube MCP и Orchestrator (19 ноября)
+
+GitHub `list_repositories(owner=peonyrhodo-bit)` подтвердил 4 доступных репозитория: `youtube-mcp`, `site-insight-engine`, `ai-youtube-system`, `SEKRETAR`. Для M02 проверены **основные server.py** двух ещё не изученных сервисов:
+
+| Репозиторий / файл | Проверенный сетевой путь | Прямые Supabase-операции в данном файле | Ограничение вывода |
+|---|---|---|---|
+| `peonyrhodo-bit/youtube-mcp/server.py` (995 строк) | `YouTubeQuotaGuard.authorize/finish` через `requests.post` к `YOUTUBE_QUOTA_AUTH_URL/internal/youtube-quota/{action}` (строки 41–100); `requests.get` к YouTube API после разрешения (161–205); fail-closed при ошибке квоты | По просмотренным импортам и поиску `supabase/postgres/database` в файле прямых SQL/REST обращений не обнаружено | Другие файлы, библиотеки и конфигурация ещё не инвентаризированы; центральный quota ledger расположен вне MCP |
+| `peonyrhodo-bit/ai-youtube-system/server.py` (277 строк) | `httpx.AsyncClient` к `ENGINE_URL` (начиная с 21, 67); прокси-маршруты `/director/run` (162–183), `/director/history` (193–197), `/director/chat` (202–208) | По проверенному файлу прямых Supabase SQL/REST обращений не обнаружено | Прокси не доказывает отсутствия других Supabase-клиентов в репозитории |
+
+**Промежуточный вывод:** в проверенных server entrypoints MCP и Orchestrator взаимодействуют с Director по HTTP, а не напрямую с его памятью. Это сужает M02 карту вызовов, но **не является полной инвентаризацией двух репозиториев**. GitHub code search `supabase`, `director_runs`, `rest/v1` вернул пустые результаты в обоих репозиториях; отрицательный результат индекса поиска не считать доказательством отсутствия кода.
+
+**Далее:** получить дерево файлов / точные модули обоих репозиториев и исследовать все storage/DB call sites, а также quota-authority endpoint в `site-insight-engine`. Дополнить таблицу методами, полями, объёмами и границами ответственности. M02 остаётся 🔄, 0/40 принято.
