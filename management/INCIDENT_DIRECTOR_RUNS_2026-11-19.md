@@ -216,3 +216,15 @@ Deployed `data/research_sets.py:751–802` `ResearchSet.from_dict` passes `metad
 `server.py:1478–1491`: after restoring `ResearchSet` instances into `self.research_manager`, DataAdapter obtains `research_sets=self.research_manager.all()` and assigns `result['research_sets']=serialize(research_sets)`. `server.py:303–340`: generic `serialize` recursively builds **new dicts and lists** for nested objects, calling `ResearchSet.to_dict()` (`data/research_sets.py:719–747`) and then serializing its full `metadata` recursively. This creates a **distinct nested object graph** for the returned project data while original ResearchSet instances remain in the live registry. Contrast with shallow `metadata=dict(...)` in `ResearchSet.__post_init__`.
 
 Since Supabase SQL found `research_sets.metadata.research_plan` 5,484,208 bytes and `operation_results` 1,768,295 bytes in textual JSON across 68 records, full recursive serialization has a meaningful *potential* transient memory cost. No direct allocation measurements; **not proof that this step caused OOM**, and Python object memory differs from JSON byte sizes. Need trace whether `result['research_sets']` is consumed or discarded by downstream Director, and whether full nested metadata is needed in the project data contract. Any fix must preserve evidence and downstream behavior; no code changes authorized.
+
+## Full research_sets retention in Director metadata — verified dataflow
+
+Deployed `site-insight-engine` commit `f95bc0e`:
+
+1. `server.py:1069–1090` `DataAdapter.get_project_state` returns a `research_sets` key.
+2. `server.py:1478–1491` populates `result['research_sets']=serialize(self.research_manager.all())`; serializer recursively copies nested dict/list values (`server.py:303–340`).
+3. `director/director.py:586–595` `Director.inspect` awaits `data_service.get_project_state` and passes full result to `self._merge_context(external_state)`.
+4. `director/director.py:851–879` `_merge_context`: keys absent from `DirectorContext` become `self.context.metadata[key]=value`. `DirectorContext` (around line 150–210) has `research_history` but no `research_sets` attribute. Therefore the full serialized list is **retained in `context.metadata['research_sets']`**, not merely transient during serialization.
+5. `Director.to_ai_decision_dict` (`director/director.py:330–386`) only whitelists specific metadata keys, excluding `research_sets`, so this full list is **not directly included** in bounded AI context. `Director._refresh_project_state` uses `data_inventory.research_set_count` (line ~714); other consumers and persistence must be checked before removal.
+
+**Impact:** concrete additional live object graph holding nested research plans/results, beyond `ResearchSetManager` registry. Textual JSON of 68 sets ~7.97 MB; Python RSS cannot be inferred directly. Potential optimization is compact `research_sets` projection or on-demand retrieval, but requires tracing all consumers and regression tests. No production change.
