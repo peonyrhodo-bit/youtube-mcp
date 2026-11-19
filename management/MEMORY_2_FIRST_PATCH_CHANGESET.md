@@ -1,0 +1,74 @@
+# Memory 2.0 — first reversible patch changeset (approval pending)
+
+Status: **design only**, 2026-11-19. No production or source-code edits in this changeset. Based on `site-insight-engine@09ceb05fbefcd8c6b9093ab03c76731fc5ca95ae`.
+
+## P0: fix hidden read errors before optimizing size
+
+### Verified code paths
+
+- `memory/supabase.py` imports `MemoryTableReadError` from `memory.read_status` and `get_context` (1132–1202) **already supports** partial/error status and logs table-level failure.
+- `get_recent_recommendations` (1569–1624) wraps the complete read/enrichment in `try/except Exception: return []`.
+- `get_recent_constraints` (1864–1902) does the same.
+- `_recent_for_project` (204–265) converts backend query failure into `MemoryTableReadError(table_name,partial_rows=rows,cause=exc)`; the two broad catches currently erase this status and partial rows.
+- `_safe_list` (112+) returns [] on malformed response, another separately testable ambiguity; **do not silently change shared helper** in P0 without compatibility tests.
+
+### Minimal proposed diff (not applied)
+
+1. In `get_recent_recommendations` and `get_recent_constraints`, remove outer `try/except Exception: return []` while preserving existing enrichment behavior. For errors during enrichment, propagate a contextual error rather than declaring successful empty list. If partial rows were fetched, wrap as `MemoryTableReadError` with `partial_rows` so `get_context` can report partial. Ensure no raw payload is logged.
+2. Keep `get_context` table-level error handler unchanged unless a failing offline test proves a gap. Confirm `_memory_read.status` becomes `partial` or `error`, never `complete`, on protected-table read failure.
+3. Add an explicit autonomous-action guard that **does not treat missing/unavailable constraints or recommendations as permission**; guard design and downstream call sites must be checked before claiming safety. A status change alone is insufficient if callers ignore it.
+4. Keep full history, schema, write paths, and FREE_MODE behavior unchanged in P0. Feature flag if any behavior affects existing read callers. No production deployment without approval.
+
+### Exact offline tests (write after approval)
+
+| Test | Setup | Expected |
+|---|---|---|
+| P0-01 | fake client `recommendations.execute()` raises RuntimeError | `_memory_read.tables.recommendations.status=error`, not complete/empty |
+| P0-02 | fake client `constraints.execute()` raises RuntimeError | `_memory_read.tables.constraints.status=error`, not complete/empty |
+| P0-03 | fake client returns one page, then raises on next page | `partial`, preserved one-page rows, error reported |
+| P0-04 | fake client returns genuine empty list | `complete`, zero rows, no errors |
+| P0-05 | enrichment encounters malformed/non-dict data_json | no invented status, no crash where old code accepted it |
+| P0-06 | fake autonomous decision when constraints read fails | action requiring consent/constraints blocked, reason explicitly incomplete memory |
+| P0-07 | synthetic cross-project nested project_id collision | cannot infer permission from first nested project_id; project isolation tested |
+| P0-08 | FREE_MODE memory backend | no regression in supported no-Supabase path |
+
+## P1: bounded results and runs read (separate patch)
+
+Read `director_results` columns `id,created_at,action_id,run_id,result_type,summary` and `director_runs` metadata without `data_json`. Current 8/8 result and 7/7 decision rows match their parent run's project_id, but future/legacy records may not. Design a project-scoped, fail-closed parent-run filter with orphan/mismatch tests. Do not use `SELECT *` for L1 lists. Preserve explicit full-detail lookup.
+
+## P2: context envelope and anti-amplification (separate patch)
+
+Cap serialized L2 context at proposed 64 KiB, preserve protected item IDs and incompleteness, remove historical raw `data_json` from `memory_state`, `snapshot`, work-plan basis and logs. Validate end-to-end run payload size; no claim of lower RSS until P1 input/read profiling.
+
+## Approval and evidence gates
+
+- **Before any source edits:** explicit approval to modify source code in a non-production branch.
+- **Before merge/deploy:** separate approval, CI and offline fixtures with reproducible outputs.
+- **Before autonomous production canary:** separate approval and baseline RSS/read metrics.
+- The management document itself does not constitute approval or a passing test.
+
+## Verified downstream safety contract (read-only inspection, 2026-11-19)
+
+Live `director/director.py:445–529`: `inspect` **already** branches on `_memory_read.status`. `complete` replaces empty state and marks healthy; `partial` merges available rows without erasing old values and sets `runtime_health.memory.status=degraded`; `error|unavailable` sets memory health unavailable. Therefore P0 propagation has a real existing consumer and should not require a new status transport.
+
+**But this is NOT an action gate:** `director/director.py:2584–2641` copies `memory_read` into `work_plan.basis`, while the listed research tasks (`refresh_evidence`, `discover_broadly`, `validate_hypotheses`, `persist_and_reinspect`, `use_daily_quota`) are assigned required/next/blocked based on freshness, coverage, capabilities and quota; the displayed task conditions do **not** inspect `memory_read`. The work plan and basis are also logged verbatim at 2640–2641. Thus P0-06 must test the **actual execution boundary**, not merely `runtime_health.memory` or presence of a `memory_read` field. No claim yet that every execution path is unguarded: inspect the executor separately.
+
+**Updated acceptance:** on failed `constraints` or `recommendations` read, `inspect` must show degraded/unavailable, and a test must prove no consent-dependent autonomous action executes. A red test is expected until a verified execution guard exists; do not mark P0 complete on status-only tests. The anti-amplification patch must also prevent raw work-plan/basis JSON logging. Existing production behavior not changed.
+
+## Execution boundary verified: research is real, act is stub (2026-11-19)
+
+Read-only live `director/director.py@09ceb05f`:
+- `_autonomy_act` (2706–2719) is **currently a stub** returning `{status:'awaiting_executor'}`; it does not perform external production/publishing. Do **not** misstate that this stage executes production actions today.
+- `_autonomy_research` (2309–2450) **does** call `self.research_service.execute(plan)` at 2400–2403 if present; its work-plan task selection (2324–2345) and executor call do **not** check `_memory_read` in the inspected segment. This is the real external-action boundary for research/API calls and ingestion; separate quota and authorization checks may exist inside the executor and must not be presumed absent.
+- P0-06 must monkeypatch a fake research executor recording calls, set `_memory_read.tables.constraints.status=error`, run an offline autonomy step, and assert an explicit policy outcome. **Policy decision required:** whether to block all external research when protected memory incomplete or only consent-dependent actions; the safest provisional contract is block external research if relevant constraints/approval state cannot be verified, while allowing read-only analysis/reporting. Record reason `memory_incomplete_protected_state`, not generic no-quota.
+- Add companion test: complete, verified empty constraints permits normal research path (subject to existing quota policy); partial protected state must not be treated as complete.
+
+**Boundary of evidence:** This inspection establishes an absent `memory_read` check at the direct `research_service.execute` call site, not proof that a real unauthorized YouTube request was sent or that downstream guards are missing. No calls to research services were made.
+
+## Real research executor verified (2026-11-19)
+
+`server.py:1991–1999` injects `self.research` into Director; `server.py:1716+` constructs `YouTubeResearchExecutor` from `director/research_executor.py`. Live `research_executor.py:674+` `execute(plan,project_id=...)` has a real MCP network path (`streamable_http_client` around 822), with quota preflight around 872–874 and additional quota checks for statistics. Search operations can call MCP and persist results. Its inspected methods do **not** contain a `memory_read` or protected-constraint authorization check; this is a code-level absence in inspected executor, **not** proof of policy breach or outbound calls.
+
+**Precise P0 boundary:** block unsafe external research **before** `Director._autonomy_research` invokes `research_service.execute(plan)` (2400–2403), with a second defense if executor is callable elsewhere; design the second defense around an explicit verified authorization context, not implicit mutable state. Preserve quota preflight as an independent gate. Test a fake executor and a fake MCP client that raise if invoked on incomplete protected-memory status. Read-only analyze/recommend/wait may continue only if they do not require missing approvals; no user-facing publication permitted by this patch.
+
+**Completion condition:** P0 cannot be called complete until both error propagation and a verified authorization guard pass offline tests. Existing source and production remain unchanged. The next step is **explicit approval for non-production code edits**, not another architecture pass.
