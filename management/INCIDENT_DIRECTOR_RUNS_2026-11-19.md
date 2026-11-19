@@ -178,3 +178,15 @@ Deployed `site-insight-engine` commit `f95bc0e`, `memory/supabase.py:856–878`:
 `memory/supabase.py:204–264` `_recent_for_project` requests `select('*')` in pages of 1000 rows, sorts descending by id for relations, and filters project IDs client-side for legacy `data_json` compatibility; can fetch more data than needed, particularly if project rows are sparse. `_summarize_project_table` (`memory/supabase.py:797–851`) iterates pages of 500 and retains bounded counters rather than entire history. Its full-table `select('*')` page still incurs network/JSON parsing cost for columns not needed by counters. This is a **verified efficiency opportunity**, not yet proven primary OOM trigger.
 
 Potential follow-up task, no implementation permission: benchmark (locally with synthetic data) selecting only summary columns where compatible with legacy metadata, and preserving exact counts; inspect relation-row payload sizes, memory peaks during per-page scans. No changes to production/DB.
+
+## Реальные размеры исследовательских таблиц — Supabase read-only SQL (2026-11-19)
+
+Метод: `count(*)`, `sum(octet_length(row_to_json(t)::text))`, `max(...)` без выгрузки содержимого строк. Это текстовое представление JSON в PostgreSQL, **не** фактическая сеть PostgREST и **не** Python RSS.
+
+| public table | rows | total JSON text bytes | max row JSON text bytes |
+|---|---:|---:|---:|
+| data_relations | 30478 | 7783443 | 269 |
+| youtube_queries | 330 | 398744 | 1358 |
+| research_sets | 68 | 7969895 | 132625 |
+
+Для `research_sets`: avg 117204 B, median 120343 B, p95 129495 B, **65 из 68** строк >100000 B. Это систематически крупные записи, а не единичный выброс. Общий текстовый JSON объём трёх таблиц 16152082 B (~15.4 MiB). Учитывать, что `load_research_data` сохраняет только до 5000 из 30478 relations в working registry, но все 68 research_sets. Вопросы для следующей проверки: какие колонки/JSON-поля research_sets занимают большую часть и как `ResearchSet.from_dict` копирует их; можно ли сохранить полный evidence в БД, загружая компактное представление в рабочий реестр. Не делать вывод об OOM из одного размера строк.
