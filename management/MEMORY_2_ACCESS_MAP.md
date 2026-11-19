@@ -111,3 +111,14 @@
 - Запрос Render events за 18:10–19:00 показал успешный deploy 18:14:49; в возвращённом наборе не было `server_failed`. Не утверждать, что событие отсутствовало за все возможные интервалы без полного просмотра страниц.
 
 **Обновлённый приоритет:** профилировать рост между циклами и удержание в `context.metadata`, `memory_state`, результатов research, логируемых/сохраняемых `DirectorResult`, а не объявлять `observations_built` доказанным виновником. Отдельно расследовать частоту автономных циклов (~1/мин в окне) относительно ТЗ о часовом расписании; это наблюдение, не окончательное заключение о scheduler. Никаких production изменений.
+
+## Autonomy loop: уточнение минутных повторов и удержания результатов
+
+Проверен `site-insight-engine/director/autonomy.py` (main, 2026-11-19):
+- `AutonomyConfig` (96–104): `max_steps_per_cycle=32`, `max_research_steps=10`, `step_timeout_seconds=120`; это лимиты **внутри одного wake**, не частота scheduler. `DirectorAutonomy.run` (235–267) увеличивает `cycle_count` при запуске.
+- `_run_cycle` (345–394) делает INSPECT и UNDERSTAND один раз в начале, затем входит в `while steps < max_steps_per_cycle` (394). При недостаточности данных `research_handler` (450–468) может выполняться до 10 раз за один wake; после research `continue` возвращает к оценке, а не к внешнему hourly scheduler.
+- `DirectorState.last_result: Any` (64), `metadata: dict[str, Any]` (74) могут держать ссылки на полные результаты. В исследовательской ветке `cycle.state.last_result = research_result` (461), `understanding = research_result` (464). В `Director._autonomy_research` дополнительно сохраняется `context.metadata[research_execution/data_ingestion]`. Проверить размер/время жизни и `DirectorCycle.to_dict()=asdict(self)` (118–119) при записи результата; это конкретный путь потенциального глубокого копирования.
+- Логи `project_data_loaded` раз в ~минуту при `research_sets 68→79` **совместимы с несколькими research steps одного wake**, не доказывают запуск нового внешнего цикла каждую минуту. Прежняя формулировка о возможном нарушении часового расписания — **гипотеза**, требующая проверки `cycle_id`, `run_id`, scheduler и timestamp.
+- Ограничение `max_research_steps=10` и рост research_sets на 11 не противоречат друг другу автоматически: логи могут охватывать больше одного wake или разный смысл counters. Не выводить количество wake из количества research_sets.
+
+**Следующая проверка:** trace `DirectorCycle.to_dict()` в `server.py` и persistence, `DirectorState.last_result` и `context.metadata`; по логам определить cycle/run IDs и фактические границы wake. M02 остаётся открытым.
