@@ -1,6 +1,6 @@
 # План устранения OOM — Director 3.0
 
-**Создан:** 2026-11-19. **Статус:** активен. **Прогресс:** 1/8. **Текущий шаг:** OOM-02. **Основной план:** 6/60; №006 заблокирован, №008 ожидает возобновления.
+**Создан:** 2026-11-19. **Статус:** активен. **Прогресс:** 2/8. **Текущий шаг:** OOM-03. **Основной план:** 6/60; №006 заблокирован, №008 ожидает возобновления.
 
 ## Цель и ограничения
 
@@ -16,8 +16,8 @@
 ## Контрольные этапы
 
 - ✅ **OOM-01** — Собрать точные стеки ошибок, временную шкалу OOM и показания памяти; отделить симптомы от причин.
-- 🔄 **OOM-02** — Прочитать путь автономного запуска, retry и загрузки памяти в фактически развёрнутой версии; построить гипотезы.
-- ⬜ **OOM-03** — Проверить гипотезы безопасно (логи, статический анализ, существующие тесты); указать, что не подтверждено.
+- ✅ **OOM-02** — Прочитать путь автономного запуска, retry и загрузки памяти в фактически развёрнутой версии; построить гипотезы.
+- 🔄 **OOM-03** — Проверить гипотезы безопасно (логи, статический анализ, существующие тесты); указать, что не подтверждено.
 - ⬜ **OOM-04** — Подготовить минимальное исправление, оценку рисков, критерии отката и конкретную задачу на изменение.
 - ⬜ **OOM-05** — Получить отдельное разрешение владельца на выбранные изменения production/кода/настроек.
 - ⬜ **OOM-06** — Реализовать согласованное изменение в ограниченном объёме, с тестами и ссылками на коммиты/PR.
@@ -37,3 +37,5 @@
 - **2026-11-19:** план создан; OOM-01 открыт. Изменений в production нет.
 
 - **2026-11-19 — OOM-01 завершён (read-only):** Render 17:20:33 UTC `GET /rest/v1/director_runs?select=*&order=created_at.desc,id.desc&offset=0&limit=1000` returned HTTP 200; 17:20:40 same query returned HTTP 500; 17:20:41 `postgrest.exceptions.APIError` code `57014`, `canceling statement due to statement timeout`, from `memory/supabase.py:_recent_for_project`; propagated as `MemoryTableReadError` for `director_runs` and autonomous scheduled wakeup failure. Render OOM at 17:22:21. The query requests up to 1000 full rows (`select=*`), a plausible source of heavy data transfer, but row sizes, indexes and causal link to OOM are **unverified**. Next OOM-02: examine deployed SHA `f95bc0e4b68a083d8acf3bb09c1c8d4c3e9762dc` at `memory/supabase.py`, `memory/director_adapter.py`, `server.py` autonomous worker and tests. No production changes.
+
+- **2026-11-19 — OOM-02 завершён (read-only, deployed SHA `f95bc0e4b68a083d8acf3bb09c1c8d4c3e9762dc`):** `memory/supabase.py:_recent_for_project` defaults to `page_size=1000`, `select("*")`, stable offset pagination, and **client-side** project filtering; even `get_recent_runs(limit=10)` may fetch 1000 or more full records, including records for other projects. Project ID may be nested in legacy `data_json`, so blindly adding a DB-side filter risks compatibility. `get_context` invokes multiple such readers. `server.py:_autonomous_worker_loop` creates an initial schedule with `first_run_at=now` and uses up to three retries with exponential delay (bounded by 60s); startup log shows worker enabled at runtime. Hypotheses: oversized Supabase scans, expensive autonomous wake cycles/retries, and interaction with statement timeouts. Causality not yet proven. Next OOM-03: check data sizes, query plans/indexes and available regression tests without production writes or expensive calls. No production changes.
