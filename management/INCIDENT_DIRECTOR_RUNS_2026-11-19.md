@@ -92,3 +92,15 @@ Read-only Supabase SQL показал:
 Render `list_deploys` для `site-insight-engine`: последний deploy со статусом `live` — `dep-dbsa40v4bgms73fng8ug`, commit `f95bc0e4b68a083d8acf3bb09c1c8d4c3e9762dc` ("Offload constraint persistence from event loop"), `finishedAt=2026-11-14T18:03:10.818637Z`. В первой странице из 15 деплоев более поздних деплоев нет. Render `list_events` за 19 ноября показывает `oomKilled.memoryLimit=512Mi` и в 14:42:35, 14:44:40 UTC.
 
 **Классификация:** эти OOM-события произошли спустя ~5 суток после последнего показанного успешного деплоя, поэтому их нельзя считать дефектами более раннего релиза, уже устранёнными последующим деплоем. При этом не доказано, что на момент любого будущего аудита проблема сохраняется; требуется свежий снимок events и сравнение с текущим deploy. Операционные события не тождественны code regression.
+
+## Первичный аудит памяти на ТОЧНОМ deployed commit f95bc0e (2026-11-19)
+
+Прочитан `peonyrhodo-bit/site-insight-engine` именно с ref `f95bc0e4b68a083d8acf3bb09c1c8d4c3e9762dc`, а не произвольный HEAD.
+
+- `memory/supabase.py:204–264`: `_recent_for_project` делает `select('*')` страницами до 1000 строк, фильтрует legacy `project_id` в Python, накапливает выбранные строки в `rows`. При `limit=None` удерживает **всю историю** таблицы, при `limit=N` удерживает N строк (но может прочесть больше из-за фильтрации). Временная память страницы и декодированного ответа дополнительно увеличивает RSS.
+- `memory/director_adapter.py:710–738`: `create_run` вызывает `_recent_for_project(TABLE_RUNS,limit=None,...)` или `get_recent_runs(limit=100000,...)` для active-run guard.
+- `server.py:2386–2402`: `_find_completed_idempotent_run` также вызывает `_recent_for_project(TABLE_RUNS,limit=None,...)` для idempotency lookup. Это **второй независимый путь** безграничного чтения истории.
+- `memory/supabase.py:1005–1052`: загрузка opportunity history ограничена конфигурацией (channels 500, snapshots 500, niches 250, niche snapshots 500, с максимальными лимитами 2000/5000/1000/5000). Это существенно отличается от безграничного чтения runs; нельзя утверждать, что именно этот участок вызвал OOM без измерений.
+- `memory/supabase.py:1132+`: `get_context` использует ограниченные значения по умолчанию (runs 10, decisions 20, events 30 и др.).
+
+**Доказано по коду:** два пути unbounded run-history scan, большие page payloads и дополнительные bounded history buffers. **НЕ доказано:** что они являются непосредственной причиной OOM; всего в runs на снимке было ~152 записи, что само по себе недостаточно для вывода о 512MiB RSS. Следующее действие — анализ размеров `data_json` и агрегатов, логов `peak_rss_raw`, а также жизненного цикла больших результатов/LLM контекста. Никаких code patches до проверки.
