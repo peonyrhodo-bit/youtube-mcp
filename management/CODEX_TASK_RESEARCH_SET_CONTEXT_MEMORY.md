@@ -39,3 +39,12 @@ No source-code changes, deploys, DB writes, or production calls as part of this 
 - Verify `/director/snapshot` uses the compact projection and still returns the same unified snapshot shape and accurate counts.
 - Verify `/director-debug` remains bounded and does not unexpectedly trigger data reload; distinguish from `/radar-debug` in tests and documentation.
 - Verify the shared Runtime/Director instance does not retain stale full `metadata['research_sets']` after switching to compact projection; no silent stale-data regressions.
+
+## Cached Director lifetime and stale metadata (deployed f95bc0e)
+
+- `server.py:1751` `Runtime.__init__` creates `self.directors: dict[str, Director] = {}`.
+- `server.py:1978–2002` `Runtime.get_director(project_id, mode)` returns an existing Director object for that project, otherwise constructs and caches one. Note: requested `mode` is ignored if the cached object already exists; mode behavior warrants a separate review, not a proven incident.
+- `director/director.py:435+` `Director.inspect` updates the existing `self.context` rather than constructing a new context per request.
+- `director/director.py:851–879` `_merge_context` assigns unknown nonempty fields into `self.context.metadata`, and does **not delete absent keys**. Therefore if an earlier inspection stored `metadata['research_sets']`, merely omitting that key in later compact responses will leave the prior full serialized list reachable for as long as the cached Director remains alive.
+
+**Implementation requirement:** explicitly clear/replace the obsolete full `metadata['research_sets']` in the Director-specific compact projection path, with careful behavior on partial/unavailable reads (do not erase evidence or report false completeness). A migration/cleanup test must populate the cached Director with full research metadata, invoke compact inspection again, then assert old full payload is not reachable via Director context; verify snapshot, state and status remain correct. Do not indiscriminately clear all context metadata or lose legitimate state. Verify cache behavior across multiple project IDs and mode choices. No code change or live experiment performed.
