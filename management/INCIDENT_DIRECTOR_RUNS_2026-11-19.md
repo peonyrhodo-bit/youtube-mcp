@@ -126,3 +126,19 @@ Render app logs `srv-dae6fi61egvs73b4pa90`, интервал 14:30–14:38 UTC, 
 В точном deployed commit `f95bc0e`, `memory/supabase.py:30–39` функция `_peak_rss_raw` возвращает `resource.getrusage(resource.RUSAGE_SELF).ru_maxrss`. На Linux `ru_maxrss` — peak resident set size в KiB. Последний пик 447.29 MiB = ~87.4% от Render 512 MiB; между замерами рост исторического пика 39.04 MiB. Показатель **накопительный**, не показывает текущий RSS или точную аллокацию этапа; при параллельных задачах нельзя приписывать рост только сканированию research.
 
 Независимое Render event `server_failed` с `oomKilled.memoryLimit=512Mi` в 14:34:09 UTC (после этих замеров) усиливает причинную связь общего превышения памяти с завершением процесса. Но какой именно объект/фаза довели память до лимита между 14:33:55 и 14:34:09 — пока неизвестно. Предпочтительное следующее действие: собрать последующие логи в 14:33:55–14:34:09 и изучить память/структуры research и LLM context, без продакшен-тестов и расходов.
+
+## Точная последовательность за 15 секунд до OOM (Render app logs, 14:33:54–14:34:10 UTC)
+
+- 14:33:55.940 `DIRECTOR MEMORY phase=project_data_loaded`: `vmhwm_mb=449.8, vmrss_mb=449.8`, youtube=1203, relations=5000, research_sets=68.
+- 14:33:56.119 `observations_built`: `vmhwm_mb=450.8, vmrss_mb=450.8`, observations=1203.
+- 14:33:57.132 `inspect` завершён, `understand` стартовал; 14:33:57.221 `assess` стартовал.
+- 14:33:58.719 `analytics_start`: `vmhwm_mb=491.7, vmrss_mb=441.3` — к этому моменту был временный пик 491.7 MB.
+- 14:34:00.227 `analytics_basic_complete`: `vmhwm_mb=491.7, vmrss_mb=444.0`.
+- 14:34:01.626 `analytics_complete`: `vmhwm_mb=491.7, vmrss_mb=448.9`.
+- 14:34:01.719 `_autonomy_analyze` завершён; `_autonomy_decide` стартовал.
+- 14:34:03.329 GET `/director-debug` 200.
+- 14:34:05.560 GET Supabase `director_runs?select=*&order=created_at.desc,id.desc&offset=0&limit=1000` 200 (unbounded history scan).
+- 14:34:06.715 POST OpenRouter `/chat/completions` 200.
+- 14:34:09.0 Render `server_failed` `oomKilled.memoryLimit=512Mi`.
+
+**Вывод:** перед OOM накопленный пик процесса ~491.7 MB, а последняя подтверждённая стадия — `decide`, с одновременной загрузкой истории запусков и вызовом LLM. Точная аллокация, превысившая лимит, неизвестна; нельзя утверждать, что OpenRouter или history scan по отдельности являются доказанной первопричиной. Показания `vmhwm_mb` и `vmrss_mb` — разные метрики (исторический пик и текущая резидентная память). Проверить код `_process_memory_mb` для точной единицы MB перед арифметическим сравнением с MiB.
