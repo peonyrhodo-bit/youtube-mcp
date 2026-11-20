@@ -54,3 +54,178 @@
 2. Wire into `Memory.get_context` operational branch and `snapshot`, preserving full history method for drill-down.
 3. Wire Director summary/work plan/logs; verify no alternate raw path.
 4. Run BM-01…BM-14 on synthetic data, inspect failures, benchmark; only then consider canary/deploy approval.
+
+## M04 — локальная фикстура RAM
+
+Проверено на Linux x86_64, Python 3.12.14, Director
+`09ceb05fbefcd8c6b9093ab03c76731fc5ca95ae`. Скрипт ниже берёт точные
+определения сериализации, сводки памяти и dataclass через AST, а также
+локальный аккумулятор аналитики. Он не импортирует приложение и не
+создаёт Runtime. Все данные синтетические, сеть блокируется через Python
+audit hook, дочерние процессы из пустого окружения ограничены по
+виртуальной памяти (448 МиБ) и времени (30 секунд). Не запускать приложение
+или pytest для этой фикстуры. Код проверен для зафиксированного SHA,
+перед переносом на другой SHA проверять извлекаемые определения.
+
+Сценарии full и refs загружают одинаковые synthetic results и research_sets.
+Первые имитируют декодирование JSON без затрат HTTP. Анализ использует
+реальный потоковый аккумулятор, стадия research создаёт фиксированный
+локальный результат, стадия сохранения кодирует имитацию PATCH в памяти.
+Refs заменяет исходные данные в **выходной** сводке ссылками, сохраняя
+те же ID. Это контрольный вариант, он не использует PR #69 и не определяет
+правила хранения или формат production. Масштаб 1/2/5 меняет историю и
+число аналитических входов. Окно последних пяти refs по коду остаётся
+одного размера, поэтому оно изолирует амплификацию от роста всей истории.
+
+Сохранить следующий блок как `probe.py` во временном каталоге:
+
+```python
+import ast
+import json
+import resource
+import sys
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+def deny_network(event, args):
+    if event.startswith("socket."):
+        raise RuntimeError("Offline fixture: socket operation blocked")
+
+sys.addaudithook(deny_network)
+resource.setrlimit(resource.RLIMIT_AS, (448 * 2**20, 448 * 2**20))
+source = Path(sys.argv[1])
+scale = int(sys.argv[2])
+assert scale in (1, 2, 5)
+variant = sys.argv[3]
+assert variant in ("full", "refs")
+
+def extract(path, names, class_name=None):
+    tree = ast.parse((source / path).read_text())
+    body = tree.body
+    if class_name:
+        body = next(n.body for n in body if isinstance(n, ast.ClassDef)
+                    and n.name == class_name)
+    selected = [n for n in body if isinstance(n, (ast.FunctionDef, ast.ClassDef))
+                and n.name in names]
+    assert {n.name for n in selected} == set(names)
+    exec(compile(ast.Module(body=selected, type_ignores=[]), path, "exec"), globals())
+
+extract("server.py", {"_process_memory_mb", "serialize"})
+extract("director/director.py", {"_memory_state_summary"}, "Director")
+extract("director/autonomy.py", {
+    "DirectorPhase", "CycleStatus", "DirectorState", "CycleEvent", "DirectorCycle",
+})
+# This module only defines counters, statistics and the local accumulator.
+exec(compile((source / "analytics/streaming.py").read_text(),
+             "analytics/streaming.py", "exec"), globals())
+
+def measure(phase, **extra):
+    print(json.dumps({"phase": phase, **_process_memory_mb(), **extra}), flush=True)
+
+measure("baseline")
+results = []
+for i in range(20 * scale):
+    size = 2_336_825 if i % 20 in (18, 19) else 512
+    results.append(json.loads(json.dumps({
+        "id": i, "data_json": {"evidence": "x" * size},
+    })))
+research_sets = [
+    json.loads(json.dumps({"id": i, "metadata": {"research_plan": "r" * 120_000}}))
+    for i in range(68 * scale)
+]
+measure("history", results=len(results), research_sets=len(research_sets))
+
+acc = StreamingYouTubeAnalytics()
+for i in range(1203 * scale):
+    acc.add_video({"video_id": str(i), "title": f"Synthetic {i}"})
+for i in range(12483 * scale):
+    acc.add_snapshot({"video_id": str(i % (1203 * scale)), "data_json": {
+        "statistics": {"viewCount": i + 100}, "_radar": {"age_hours": 72},
+    }})
+analytics = acc.to_dict()
+measure("analysis")
+
+# Synthetic completed research return, no MCP client or scheduler.
+research_result = {"research_sets": research_sets[-5:], "analysis": analytics}
+measure("research_fixture")
+
+raw_rows = results[-20:]
+rows = (
+    [{"id": row["id"], "details_omitted": True} for row in raw_rows]
+    if variant == "refs" else raw_rows
+)
+ctx = SimpleNamespace(context=SimpleNamespace(metadata={
+    "memory_state": {"recent_results": rows},
+}))
+basis = {"memory_state": _memory_state_summary(ctx)}
+work_plan = {"basis": basis}
+state = DirectorState(last_result=research_result,
+                      metadata={"project_assessment": basis, "work_plan": work_plan})
+cycle = DirectorCycle(cycle_id="fixture", status=CycleStatus.COMPLETED, state=state)
+assert len(basis["memory_state"]["recent_results"]) == 5
+measure("before_logs")
+basis_bytes = len(json.dumps(basis, ensure_ascii=False).encode("utf-8"))
+plan_bytes = len(json.dumps(work_plan, ensure_ascii=False).encode("utf-8"))
+measure("logs", basis_bytes=basis_bytes, plan_bytes=plan_bytes)
+
+result = serialize(cycle)
+measure("asdict_and_serialize")
+patch = {"data_json": {**{"status": "running"}, "result": result}}
+patch_bytes = len(json.dumps(patch, ensure_ascii=False).encode("utf-8"))
+assert result["state"]["metadata"]["work_plan"]["basis"]["memory_state"]["recent_results"][0]["id"] == rows[-5]["id"]
+measure("patch_encoding", patch_bytes=patch_bytes)
+```
+
+В существующем локальном checkout Director указанный коммит должен быть
+доступен. Команды читают Git без смены ветки, кладут исходники и результаты
+во временный каталог. Каждый прогон — отдельный процесс.
+
+```bash
+set -euo pipefail
+probe_dir=$(mktemp -d)
+director_repo=/workspace/site-insight-engine
+git -C "$director_repo" archive 09ceb05fbefcd8c6b9093ab03c76731fc5ca95ae \
+  server.py director/director.py director/autonomy.py analytics/streaming.py \
+  | tar -x -C "$probe_dir"
+# Скопируйте блок Python выше в "$probe_dir/probe.py".
+for scale in 1 2 5; do
+  for variant in full refs; do
+    for trial in 1 2 3; do
+      timeout 30s env -i PATH="$PATH" python -I "$probe_dir/probe.py" \
+        "$probe_dir" "$scale" "$variant" > "$probe_dir/$scale-$variant-$trial.jsonl"
+    done
+  done
+done
+```
+
+### Измерения 2026-11-20
+
+18 прогонов завершились с кодом 0. Таблица показывает медианы из трёх
+отдельных процессов. RSS/HWM даны в МиБ; значения PATCH — длина
+UTF-8 JSON в фикстуре. Сводку измерять в одинаковом окружении, сравнивая
+также базовый RSS, а не только абсолютные пики.
+
+| Масштаб / режим | RSS после history | RSS после analysis | RSS после research fixture | HWM после логов | HWM после asdict/serialize | HWM после кодирования PATCH | PATCH, байт |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| ×1 full | 29,5 | 29,5 | 29,5 | 40,4 | 40,4 | 54,0 | 9 963 452 |
+| ×1 refs | 29,4 | 29,5 | 29,5 | 29,5 | 29,5 | 30,5 | 613 020 |
+| ×2 full | 41,7 | 41,7 | 41,7 | 52,6 | 52,6 | 66,2 | 9 963 459 |
+| ×2 refs | 41,7 | 41,7 | 41,7 | 41,7 | 41,7 | 42,8 | 613 027 |
+| ×5 full | 78,4 | 78,4 | 78,5 | 89,4 | 89,4 | 103,0 | 9 963 460 |
+| ×5 refs | 78,4 | 78,5 | 78,5 | 78,5 | 78,5 | 79,5 | 613 028 |
+
+Базовый RSS 17,9 МиБ, HWM 20,9 МиБ в медиане. Разброс финального
+HWM каждой группы 0–0,1 МиБ. В ×5 синтетический исходный JSON
+увеличивает HWM на 23,5 МиБ относительно refs, при одинаковой загрузке.
+Отсутствие нового HWM на этапе `asdict_and_serialize` не означает нулевые
+аллокации. Реальный цикл может повторно удерживать результаты и
+включает больше форматов и вспомогательных буферов.
+Этот сценарий проверяет локальный механизм, без воспроизведения
+лимита контейнера, сетевых ответов, живых запросов, повторов цикла,
+причин kill или graceful shutdown. Следующий офлайн профиль полного
+цикла должен использовать только поддельные Supabase/MCP/AI клиенты и
+подтверждать отдельно границы фаз, выходные статусы и отсутствие дублей.
