@@ -144,3 +144,19 @@ Additional confirmed call sites in `site-insight-engine/main/server.py`:
 **Отдельно:** `_find_completed_idempotent_run` с `limit=None` — PR-B, не смешивать с PR-A; startup/retry — PR-C. Проверить перекрытие с существующими draft PR #67/#69. Не менять 24 slots, Supabase schema, runtime или deployment в PR-A.
 
 **Статус:** техническое задание для Codex подготовлено в документации. Никакой PR с кодом не создан; тесты не запускались.
+
+
+## 13. PR-B — durable idempotency lookup, no full-history scan (2026-11-20; проект, без реализации)
+
+**Подтверждённый код:** `site-insight-engine/main/server.py:_find_completed_idempotent_run` около 2385–2441 напрямую обращается к `runtime.memory.backend._recent_for_project(TABLE_RUNS, limit=None)`; fallback `get_context(limit_runs=100)`. Затем Python перебирает строки и проверяет `row.idempotency_key` либо `row.data_json.idempotency_key`; статус `row.idempotency_status` или `data_json.idempotency_status`; результат `row.result` или `data_json.result`. Для `failed` и `in_progress` возвращает HTTP 409, для `completed` с dict result возвращает сохранённый результат, при ошибке чтения HTTP 503 (fail closed). `memory/supabase.py:save_run` около 1210 пишет весь `data_json`, выделяя только некоторые поля в колонки, поэтому нельзя предполагать, что idempotency_key уже есть в отдельной колонке. `update_run` около 1236 делает полный SELECT data_json перед merge.
+
+**Предлагаемая реализация в отдельном PR-B после PR-A:**
+1. Провести read-only проверку схемы `director_runs`, индексов и распределения legacy ключей; проверить фактический формат `data_json`, **не выгружая массивы больших JSON**. Не менять схему без отдельного согласования.
+2. Добавить узкий API `memory/` для поиска `(project_id, idempotency_key)` с устойчивой семантикой `completed`, `failed`, `in_progress`; server.py только вызывает его и маппит HTTP.
+3. Предпочтение индексированному серверному поиску. Варианты после аудита: отдельная indexed колонка/таблица ключей с безопасным backfill, либо проверенный PostgreSQL expression index по JSONB; RLS, права и legacy project_id обязательно проверить. Индекс по JSONB нельзя считать бесплатным или автоматически доступным через PostgREST.
+4. Никакой эвристики «последние N записей»: сохранённый старый ключ должен находиться всегда. Не менять статусную логику 409/503, не возвращать 404/None при неполном чтении.
+5. Защита от гонки: атомарная reservation/unique constraint либо эквивалентный существующий механизм; два параллельных одинаковых запроса не должны запускать два цикла. Проверить restart/multi-worker и project A/B.
+6. Тесты offline: legacy JSON-only ключи, top-level keys, completed result reuse, failed/in_progress 409, database unavailable 503, duplicate concurrency, old keys, разные проекты, status transitions, no full table scan, no loss of run data.
+7. Сравнить число и размер запросов до/после; не обещать снижение суммарного egress в ГБ без измерений.
+
+**Порядок:** PR-A narrow API readers → PR-B indexed idempotency → PR-C scheduler startup. Параллельно проверить, какие изменения уже покрывают draft PR #67/#69. Код/SQL/Render/production без отдельного одобрения не менять.
