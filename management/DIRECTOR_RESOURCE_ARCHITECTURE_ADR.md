@@ -100,3 +100,12 @@ Additional confirmed call sites in `site-insight-engine/main/server.py`:
 6. **Instrumentation:** bytes per response (when observable), count by route/caller, page count, duration, RAM peak, retry attempts, quality baseline. Compare before/after using offline fixture and only later approved canary.
 
 **Acceptance gates:** every endpoint response contract unchanged; multi-project/legacy history correct; idempotency durable; errors fail closed; no duplicate cycles; no new YouTube quota consumption; recommendations and historical evidence remain accessible; measurable reduction in transferred bytes and RAM. Existing draft PRs #67/#69 must be assessed for overlap, not blindly duplicated. Do not alter source, Supabase, Render, billing or schedule without explicit approval.
+
+
+## 10. Обязательное правило модульности от владельца (2026-11-20)
+
+**Решение владельца:** не перегружать `server.py`. Он является **тонким транспортным/API-слоем**: маршруты, проверка/разбор входа, вызов профильного сервиса, преобразование ответа и HTTP-ошибок. Бизнес-логика, хранение, выборки, циклы и алгоритмы должны находиться в соответствующих пакетах: память — `memory/`, исследования — `research/`, планирование/пробуждения — в их профильных модулях, аналогично для других подсистем. Существующие имена модулей и структура проверяются перед рефакторингом; новые каталоги не создавать без необходимости.
+
+**Применение к P0/P1:** выборки рекомендаций, истории, контекста, идемпотентность и совместимость legacy — в `memory/` и профильных сервисах; исследовательские алгоритмы — в `research/`; orchestration/scheduler — вне `server.py`. В `server.py` допускаются только тонкие обработчики и wiring. Исправление проблемы egress не должно увеличивать бизнес-логику в `server.py`; предпочтителен её постепенный вынос при сохранении публичных маршрутов и контрактов.
+
+**Критерий ревью:** для каждой новой/изменённой функции указать владельца-модуль; отклонять PR, добавляющие тяжёлые запросы, циклы или исследования в `server.py`. Подтвердить regression tests, multi-project, историческую совместимость и отсутствие изменения поведения API. Это правило утверждено владельцем; остальные предложения ADR остаются проектом до отдельного одобрения.
