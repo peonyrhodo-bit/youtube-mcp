@@ -80,3 +80,23 @@
 **Причинная цепочка:** старт/плановый wake или dashboard → повторная сборка контекста → полные страницы JSON → трафик/RAM/SQL timeout → ограниченные retries. Это подтверждённый путь в коде, **но не доказательство, что все реальные 37,98 ГБ прошли через него**.
 
 **Приоритет без потери функций:** (1) изолировать старт сервиса от тяжёлого цикла, не теряя on-demand; (2) сделать проекции/фильтры/пагинацию безопасными для legacy и истории; (3) заменить многократные полные dashboard context и run RMW на целевые обращения; (4) проверить retry/idempotency; (5) замерить bytes/request, calls/cycle и качество до/после. Любой patch — отдельный PR, тесты и разрешение. Никаких изменений в runtime на этом этапе.
+
+
+## 9. P0 implementation plan — API read amplification (read-only code audit 2026-11-20)
+
+Additional confirmed call sites in `site-insight-engine/main/server.py`:
+- `GET /director/recommendations` around 3113 calls `get_context` for **all eight** tables although response uses only `recommendations`.
+- `GET /director/recommendations/{id}` around 3145 and `POST /director/recommendations/{id}/action` around 3190 also read eight tables, **100 requested items per collection**, and then filter recommendations in Python.
+- `GET /events` around 3880 and `GET /director/history` around 3910 also load all eight tables to return one collection.
+- `_find_completed_idempotent_run` around 2387 invokes `backend._recent_for_project(TABLE_RUNS, limit=None, project_id=...)`, which scans all pages, loads all columns including large `data_json`, and then searches for the idempotency key in Python. This is a separate high-risk full-history read path; retain fail-closed behavior on incomplete read.
+- `/director/dashboard` delegates to `/dashboard`, already confirmed full eight-table context.
+
+**Minimal patches proposed (NOT approved, no code changed):**
+1. **P0-A: narrow endpoint readers.** Recommendations list/detail/action read only recommendations; events only events; history only runs; preserve response shapes, authorization/project isolation, ordering, limits and errors. For detail/action prefer server-side identity predicate where schema supports it; legacy nested IDs require a verified compatibility fallback. Avoid treating incomplete read as not found.
+2. **P0-B: bounded idempotency index.** Add durable indexed lookup by `(project_id, idempotency_key)` or compatible separate lookup, while preserving historical records and preventing duplicate execution after restarts. Backfill/legacy compatibility before removing full scan; no migration without owner approval. Do not replace with fixed recent N without proof: old keys must still be recognized.
+3. **P0-C: memory projection and project filtering.** Per-table narrow columns; prefer DB-side project_id filter with fallback for legacy JSON; verify across multiple projects and data_json-only historical rows. No TTL/deletion, no loss of quality or historical retrieval.
+4. **P1: startup/scheduler.** Prevent implicit heavy analysis at service boot, preserve current 24 scheduled slots until owner approves a change, preserve manual run and morning delivery. Test cold start/redeploy, retry, overlap, Supabase 402/500, SQL 57014.
+5. **P1: update_run.** Replace read–merge–write of large `data_json` only after proving merge semantics and concurrency tests; avoid lost fields and partial status bugs.
+6. **Instrumentation:** bytes per response (when observable), count by route/caller, page count, duration, RAM peak, retry attempts, quality baseline. Compare before/after using offline fixture and only later approved canary.
+
+**Acceptance gates:** every endpoint response contract unchanged; multi-project/legacy history correct; idempotency durable; errors fail closed; no duplicate cycles; no new YouTube quota consumption; recommendations and historical evidence remain accessible; measurable reduction in transferred bytes and RAM. Existing draft PRs #67/#69 must be assessed for overlap, not blindly duplicated. Do not alter source, Supabase, Render, billing or schedule without explicit approval.
