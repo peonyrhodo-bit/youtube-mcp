@@ -180,3 +180,15 @@ Additional confirmed call sites in `site-insight-engine/main/server.py`:
 7. Не менять live Render env, расписание, deployment, Supabase или billing без явного согласования и canary. Перед PR проверить draft PR #67/#69 и действующий scheduler API.
 
 **Статус:** точная карта дефекта и техническое задание PR-C записаны. Реализация, тесты и production изменения не выполнялись.
+
+
+## 15. Проверка пересечения с существующими draft PR #67/#69 (2026-11-20)
+
+Проверены GitHub описания:
+- [site-insight-engine PR #67](https://github.com/peonyrhodo-bit/site-insight-engine/pull/67): fail-closed protected memory read, перед исследованием, 6 offline tests заявлены, тесты не выполнены на момент описания. Не является исправлением endpoint read amplification, idempotency или scheduler startup.
+- [site-insight-engine PR #69](https://github.com/peonyrhodo-bit/site-insight-engine/pull/69): opt-in `get_recent_run_refs` без `data_json`, bounded projected references; runtime caller не изменён, autonomous cycles не меняются, нет доказанного production OOM fix. Заявлены 175 тестов и 11 subtests Codex, независимо здесь не запускались. Пределы 64 KiB/20 refs/5 pages — гипотезы, не утверждённые owner.
+- Оба draft и не должны автоматически merge/deploy.
+
+**Совместимость планов:** PR-A должен использовать единый fail-closed `MemoryReadError` и не ослаблять protected-memory gate #67. PR-B должен искать старые ключи надёжно, а не подменять их `get_recent_run_refs` из #69: bounded refs не доказывают полноту исторического поиска. PR-C должен учитывать защиту от неполной памяти и не создавать повторных циклов. При разработке смотреть фактические diff, тесты и ветки, не полагаться только на описание PR.
+
+**Гейт:** перед реализацией source PR и review; далее изолированные PR, offline CI, review архитектуры (server thin; memory/scheduler/research), затем отдельное решение владельца о merge и production. В этом шаге исходники, база, deployment и настройки не изменялись.
