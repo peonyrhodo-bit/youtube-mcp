@@ -125,3 +125,22 @@ Additional confirmed call sites in `site-insight-engine/main/server.py`:
 **Минимальные отдельные PR (порядок):** PR-A профильные read methods в `memory/` + тонкие endpoint wrappers; PR-B idempotency lookup в `memory/` + совместимость старых записей; PR-C startup worker в `scheduler/` + сохранение текущего расписания; PR-D оптимизация update_run без потери полей; PR-E поэтапное выделение `research/` после отдельной карты зависимостей. Каждый PR малый, тестируемый и не увеличивает бизнес-логику `server.py`. Проверить конфликт/пересечение с draft PR #67/#69.
 
 **Статус:** архитектурная карта и порядок — предложение; правило тонкого `server.py` и доменной организации — решение владельца. Никаких изменений в исходниках или production не сделано.
+
+
+## 12. PR-A — готовый scope для Codex (2026-11-20; проект, без реализации)
+
+**Цель:** исключить ненужные чтения семи таблиц при запросе одного типа данных, без изменения API/истории/модульных границ.
+
+**Подтверждённая точка расширения:** `memory/director_adapter.py:get_context` (около 600) оборачивает backend и проверяет `_memory_read.status`, бросает `MemoryReadError` при incomplete. `memory/supabase.py` уже содержит отдельные `get_recent_recommendations` (около 1567), `get_recent_runs` (1249), `get_recent_events` и другие; следует переиспользовать, а не дублировать. В `server.py` route `recommendation_action` (около 3188) читает восемь коллекций с лимитом 100 и ищет `recommendation_id` в Python. Все операции должны сохранять fail-closed semantics: ошибка чтения ≠ отсутствие рекомендации.
+
+**Шаги PR-A:**
+1. Добавить в `memory/director_adapter.py` узкие async methods для получения конкретной коллекции, использующие существующие backend methods и `_call_off_thread`, с единым `MemoryReadError`; не обращаться к `runtime.memory.backend` из HTTP layer.
+2. Перевести `GET /director/recommendations`, `GET /events`, `GET /director/history` на профильные методы. Сохранить JSON response shape, сериализацию, ограничения и порядок, default project, ошибки и fallback backend.
+3. Перевести `GET /director/recommendations/{id}` и action на поиск через память, не загружая семь посторонних коллекций. **Не вводить слепое ограничение «последние 100» для ID:** проверить историческую доступность, legacy recommendation_id и проектную изоляцию; отдельный targeted lookup/index только после проверки схемы.
+4. Оставить `/dashboard` пока с полным контекстом, потому что его контракт реально содержит все коллекции; оптимизировать его отдельно через bounded projection/cache при измеренном сценарии.
+5. Тесты: вызов каждого route → только необходимая коллекция; старый и новый JSON побайтово/семантически эквивалентны (кроме непреднамеренных ошибок); project A/B; old recommendation ID; 402/500/timeouts; недоступная память не превращается в 404/пустой список; alternative backend; не добавлена бизнес-логика в `server.py`.
+6. Метрики offline: число вызовов backend по таблицам (ожидаемо 8→1 для list/history/events), байты сериализованного payload и RAM; это **оценка сокращения запросов**, не обещание 8× меньшего общего egress.
+
+**Отдельно:** `_find_completed_idempotent_run` с `limit=None` — PR-B, не смешивать с PR-A; startup/retry — PR-C. Проверить перекрытие с существующими draft PR #67/#69. Не менять 24 slots, Supabase schema, runtime или deployment в PR-A.
+
+**Статус:** техническое задание для Codex подготовлено в документации. Никакой PR с кодом не создан; тесты не запускались.
