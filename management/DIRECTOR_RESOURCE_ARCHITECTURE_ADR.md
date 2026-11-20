@@ -160,3 +160,23 @@ Additional confirmed call sites in `site-insight-engine/main/server.py`:
 7. Сравнить число и размер запросов до/после; не обещать снижение суммарного egress в ГБ без измерений.
 
 **Порядок:** PR-A narrow API readers → PR-B indexed idempotency → PR-C scheduler startup. Параллельно проверить, какие изменения уже покрывают draft PR #67/#69. Код/SQL/Render/production без отдельного одобрения не менять.
+
+
+## 14. PR-C — scheduler startup, wakeups and bounded retry (2026-11-20; проект, без реализации)
+
+**Подтверждено read-only в `site-insight-engine/main/server.py`:**
+- `AUTONOMOUS_ENABLED` около строки 84 читается из env (default `false`), но `startup()` около 4079 **безусловно** делает `asyncio.create_task(_autonomous_worker_loop())`, пишет `Director continuous cycle: enabled`. Само по себе это не доказывает фактический production env или количество выполненных циклов; показывает несоответствие флага и startup.
+- `_autonomous_worker_loop` около 2948 при отсутствии active schedule создаёт interval `AUTONOMOUS_WAKE_INTERVAL_SECONDS` (default 3600) с `first_run_at=now`, а затем обрабатывает due wakeups и вызывает `_execute_autonomous_cycle`.
+- Ошибка выполнения ставит retry до `max_attempts=3` (до 60 секунд задержки), даже если причина — системная недоступность хранилища. Есть локальная блокировка параллельных циклов проекта, но этого недостаточно для устойчивой координации между процессами.
+- `shutdown()` отменяет worker. Нет доказательства, что этот код был точной версией во время всех исторических GET или что все GET вызваны worker.
+
+**Предлагаемый PR-C после PR-A/PR-B, с соблюдением модульности:**
+1. Вынести lifecycle/wakeup/interval/retry orchestration из `server.py` в `scheduler/` и профильный сервис `director/`; в `server.py` оставить только wiring запуска/остановки.
+2. Согласовать семантику `AUTONOMOUS_ENABLED`: `false` не запускает автономный worker; ручной on-demand остаётся доступен. Сначала проверить production env и существующие потребители; **не отключать действующую автономность случайно**.
+3. Убрать немедленный тяжёлый запуск при каждом startup; сохранить текущие 24 плановых слота до отдельного решения владельца, а missed-run и cold-start семантику согласовать и проверить. Простое `first_run_at=now+3600` без восстановления пропущенных запусков недопустимо.
+4. Добавить durable schedule/wakeup identity или проверенную идемпотентность на multi-worker/restart, ограничить ретраи и отличать transient errors от 402/исчерпания квоты. На 402 — явный degraded/fail-closed, без бесконечного повторного чтения и без ложного «полного анализа».
+5. Логи/метрики: `startup_reason`, `schedule_id`, `wakeup_id`, `cycle_id`, `retry_attempt`, `source` (manual/scheduled/retry), `memory_read_count`, `bytes` если доступны; без секретов.
+6. Offline tests: `AUTONOMOUS_ENABLED=false/true`, web health without analysis, manual on-demand, 24 scheduled slots, restart before/after due, 2 workers, duplicate wake, failed/partial memory, Supabase 402/500/57014, no new YouTube API consumption, no regressions in multi-project history or recommendations.
+7. Не менять live Render env, расписание, deployment, Supabase или billing без явного согласования и canary. Перед PR проверить draft PR #67/#69 и действующий scheduler API.
+
+**Статус:** точная карта дефекта и техническое задание PR-C записаны. Реализация, тесты и production изменения не выполнялись.
